@@ -1,0 +1,11 @@
+# Channels/groups the monitoring account watches. One per line.
+# Formats accepted: @username  |  https://t.me/username  |  numeric id
+# Lines starting with # are ignored.
+#
+# Public channels are auto-joined on startup. For private groups (like the
+# "Crypto Library Discussion" group in the screenshots, which had no public
+# @username visible), join them manually from the account first, then add
+# the id here.
+#
+# Seed: operator channel observed in the 2026-07 screenshots.
+GJpay012
