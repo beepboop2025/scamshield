@@ -1,8 +1,9 @@
+import os
 # -*- coding: utf-8 -*-
 """Precision lens: 12 NEW ordinary Indian Telegram messages, none in corpus.py.
 Every one is something a real person would post in a real group."""
 import sys, os
-sys.path.insert(0, "/Users/user/dev/scamshield/detector_v2_candidate")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import detector_v2 as D
 
 CASES = [

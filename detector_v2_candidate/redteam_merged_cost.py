@@ -1,7 +1,8 @@
+import os
 # -*- coding: utf-8 -*-
 """Cost-of-the-fixes probes: what do the new prohibition/quote rules give away?"""
 import sys, importlib
-sys.path.insert(0, "/Users/user/dev/scamshield/detector_v2_candidate")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 D = importlib.import_module(sys.argv[1] if len(sys.argv) > 1 else "detector_v2_merged")
 from corpus import POSITIVES
 C = D.classify

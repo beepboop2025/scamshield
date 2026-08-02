@@ -1,10 +1,11 @@
+import os
 # -*- coding: utf-8 -*-
 """Run corpus + legacy fixtures + red-team counterexamples + my 12 new negatives
 against ANY detector module.  usage: python3 measure.py detector_v2 | detector_v2fix"""
 import sys, os, importlib
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-sys.path.insert(0, "/Users/user/dev/scamshield/detector_v2_candidate")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 D = importlib.import_module(sys.argv[1] if len(sys.argv) > 1 else "detector_v2")
 from corpus import POSITIVES, NEGATIVES, LEGACY
 from redteam_precision_cases import CASES

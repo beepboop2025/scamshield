@@ -1,10 +1,11 @@
+import os
 # -*- coding: utf-8 -*-
 """Measure ANY detector module against every requested check.
 usage: python3 measure_all.py <module_name>
 """
 import sys, os, time, importlib
 
-CAND = "/Users/user/dev/scamshield/detector_v2_candidate"
+CAND = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, CAND)
 D = importlib.import_module(sys.argv[1] if len(sys.argv) > 1 else "detector_v2_merged")
 from corpus import POSITIVES, NEGATIVES, LEGACY

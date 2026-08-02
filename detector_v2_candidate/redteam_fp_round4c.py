@@ -1,7 +1,8 @@
+import os
 # -*- coding: utf-8 -*-
 """Round-4C: minimal-trigger ablation for the round-4B false positives."""
 import sys, importlib
-CAND = "/Users/user/dev/scamshield/detector_v2_candidate"
+CAND = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, CAND)
 M = importlib.import_module("detector_v2_merged")
 P = importlib.import_module("detector_v2_precision_patch")
