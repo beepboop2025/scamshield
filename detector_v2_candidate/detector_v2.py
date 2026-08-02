@@ -54,44 +54,6 @@ broke the version without it:
 Signals never sum to a delete on a single family alone (except an explicit
 counterfeit-note OFFER, which is self-sufficient and is the one legacy
 fixture that depends on it).
-
-MERGE NOTE (this file)
-----------------------
-This is the merge of three parallel builds: the base, the precision patch
-(D1-D9) and the correctness fixes. It is built on the correctness build and
-carries every precision fix plus the evasion fixes. What each defect cost and
-what closed it:
-
-C1  ATTRIBUTION was being SUMMED into the raw score, so -130 of subtraction was
-    reachable by appending anti-scam boilerplate: 23 of 24 positives went to
-    CLEAN, which POLICY ignores outright. `score` is now content only
-    (full_sig + veto_full). Attribution is consumed by the carrier-conditioned
-    gates and never subtracted. CONSEQUENCE, stated plainly: `Verdict.score`
-    no longer falls for a victim who quotes an ad — their protection is the
-    TIER (they land on WATCH), not the number. Any harness that asserts
-    `score < 35` on the quoting negatives (N01/N09/N11/N16/N17) will read 50-100
-    and must be re-pointed at `tier`.
-C2  _BLOCKQUOTE_RE was quadratic (58 ms on 4096 newlines, measured) and its '|'
-    branch was a universal delete bypass. Now r"(?m)^[ \t]*>[ \t]?.*$".
-C3  Quote marks are attacker-controlled. A quoted span is treated as someone
-    else's words only when the carrier is a real authorial voice: enough text
-    to be a sentence AND at least one attribution marker in it.
-C4  _WARN_RE gains the Hinglish + moderator lexicon, and prohibitions are
-    scoped to the SENTENCE (_PROHIBIT_RE / _CONSEQUENCE_RE / _MODERATION_RE):
-    describing a mechanic in order to forbid it is not offering it.
-C5  FX is no longer a kill-switch upstream of its own veto, and bare 'usd' is
-    out of the FX lexicon.
-C6  Invisible characters are filtered by unicode CATEGORY (Cf/Me/Mn) after
-    NFKD, not by an enumerated class that missed 15 of 20 probes.
-C7  A note-COUNTING-machine dealer is an appliance seller, not a note seller.
-C8  下注 / 走势 are ordinary words; out of the CN betting-tips lexicon.
-C9  The flag tier now requires at least one strong family.
-C10 _PHONE_RE matches bare Indian 10-digit numbers, not only '+' forms.
-
-One defect found while measuring C1 and fixed here: the counterfeit REPORT
-veto was message-scoped, so appending the single token "police" / "警方" /
-"cyber cell" took a live counterfeit ad from CONFIRMED(60) to CLEAN(10). It is
-now sentence-scoped against the fulfilment language it quotes.
 """
 
 from __future__ import annotations
@@ -99,7 +61,6 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from functools import lru_cache
 
 __all__ = ["MARKET_USDT_INR", "Signal", "Verdict", "classify", "extract_iocs",
            "extract_rates", "normalize", "split_quotes"]
@@ -159,79 +120,8 @@ _INVISIBLE_RE = re.compile(
 )
 
 
-# --- C6: category-based invisible filter -----------------------------------
-# The enumerated class above is kept only as documentation of what USED to be
-# stripped. It is no longer the filter. An enumerated class is a whack-a-mole
-# surface and it missed 15 of 20 evasion probes: the bidi isolates
-# (U+2066-U+2069), the whole Tags block (U+E0000-U+E007F), the variation
-# selector supplement, and every combining mark. The live filter is by unicode
-# CATEGORY, with NFKD applied first so pre-composed forms decompose to
-# base + mark and then lose the mark:
-#   Cf  format characters   (ZWJ/ZWNJ, bidi controls and isolates, tags, U+00AD)
-#   Me  enclosing marks
-#   Mn  non-spacing marks   (combining diacritics: "acco" + U+0301 + "unt")
-#
-# Mn is dropped only when the base character it hangs off is Latin/Greek/
-# Cyrillic (< U+0500) or when the mark is a generic combining diacritic.
-# Unconditional Mn stripping would delete the Devanagari virama and matras and
-# mangle every Hindi-script message (and the corpus has Devanagari in it), so
-# this keeps Indic and CJK intact while still killing "accóunt" token-splitting.
-_GENERIC_MARK_RANGES = (
-    (0x0300, 0x036F),   # combining diacritical marks
-    (0x1AB0, 0x1AFF),   # ... extended
-    (0x1DC0, 0x1DFF),   # ... supplement
-    (0x20D0, 0x20FF),   # combining marks for symbols
-    (0xFE20, 0xFE2F),   # combining half marks
-)
-
-
-def _generic_mark(ch: str) -> bool:
-    o = ord(ch)
-    return any(a <= o <= b for a, b in _GENERIC_MARK_RANGES)
-
-
-# 0 = keep, 1 = always drop (Cf/Me/generic Mn), 2 = drop iff base is Latinesque.
-_CHAR_ACTION: dict = {}
-
-
-def _action(ch: str) -> int:
-    a = _CHAR_ACTION.get(ch)
-    if a is None:
-        cat = unicodedata.category(ch)
-        if cat in ("Cf", "Me"):
-            a = 1
-        elif cat == "Mn":
-            a = 1 if _generic_mark(ch) else 2
-        else:
-            a = 0
-        _CHAR_ACTION[ch] = a
-    return a
-
-
-def _strip_invisible(t: str) -> str:
-    out = []
-    for ch in t:
-        a = _action(ch)
-        if a == 1:
-            continue
-        if a == 2 and out and ord(out[-1]) < 0x0500:
-            continue                       # decorative mark on Latin/Greek/Cyrillic
-        out.append(ch)
-    return "".join(out)
-
-
 def normalize(text: str) -> str:
-    # Pure-ASCII fast path: no confusable, no invisible, no mark is ASCII, and
-    # NFKD/NFKC are the identity there. Keeps the per-character scan off the
-    # hot path for the overwhelming majority of messages.
-    if text.isascii():
-        return text
-    # NFKD, not NFKC: decomposing first exposes pre-composed diacritics as
-    # separate Mn marks so the category filter can drop them. Re-composed with
-    # NFKC afterwards so downstream literals (CJK, fullwidth) are canonical.
-    t = unicodedata.normalize("NFKD", text)
-    t = _strip_invisible(t)
-    t = unicodedata.normalize("NFKC", t)
+    t = unicodedata.normalize("NFKC", text)
     t = "".join(_CONFUSABLES.get(c, c) for c in t)
     t = "".join(_HANT2HANS.get(c, c) for c in t)
     return _INVISIBLE_RE.sub("", t)
@@ -239,7 +129,7 @@ def normalize(text: str) -> str:
 
 # ----------------------------------------------------------------- quoting
 _QUOTE_RE = re.compile(r"[\"“”«»『「]([^\"“”«»』」]{20,1200})[\"“”«»』」]", re.S)
-_BLOCKQUOTE_RE = re.compile(r"(?m)^[ \t]*>[ \t]?.*$")
+_BLOCKQUOTE_RE = re.compile(r"(?m)^\s*(?:>|\|)\s?.*$")
 
 
 def split_quotes(text: str):
@@ -262,7 +152,7 @@ def split_quotes(text: str):
 _INBAND_LO_MULT, _INBAND_HI_MULT = 1.15, 2.20   # 103.5 .. 198 at market 90
 
 _FX_CTX = re.compile(
-    r"\b(?:gbp|eur|aed|sar|kwd|qar|omr|bhd|sgd|cad|aud|chf|jpy|myr|thb|nzd|zar)\b"
+    r"\b(?:gbp|eur|aed|sar|kwd|qar|omr|bhd|sgd|cad|aud|chf|jpy|myr|thb|nzd|zar|usd)\b"
     r"|\b(?:pound|euro|dirham|riyal|rial|dinar|ringgit|yen)s?\b"
     r"|\b(?:wise|remitly|remittance|remit|western\s*union|xoom|instarem|forex|"
     r"mid-?market|nri)\b", re.I)
@@ -286,16 +176,11 @@ _INR_CTX = (r"(?:\binr\b|₹|\brs\.?(?![a-z])|\brupees?\b|\brupya\b|\brupaye\b|"
 # The crypto / settlement anchor. A rate quote only becomes STRONG evidence
 # when the message is about moving value on a crypto or settlement rail.
 # Deliberately excludes plain remittance words (those are the FX veto).
-_CRYPTO_RE = re.compile(
+_CRYPTO_SETTLE_RE = re.compile(
     r"(?<![a-z])(?:usdt|usdc|tether|trc\s?-?20|erc\s?-?20|bep\s?-?20|trx|tron|"
     r"btc|eth|crypto|stable\s?coins?|binance|wazirx|coindcx|mudrex|bybit|okx|"
-    r"kucoin|p2p|escrow|hawala|angadia|hundi)(?![a-z])", re.I)
-# Ordinary Indian business vocabulary. Anchors ONLY with independent context:
-# every gig-work payout card, broker note and NBFC job ad says "settlement"
-# and "payout", and on their own they were minting a crypto anchor.
-_SETTLE_RAIL_RE = re.compile(
-    r"(?<![a-z])(?:otc|payin|pay-?in|payout|pay-?out|settle\w*)(?![a-z])", re.I)
-_CRYPTO_SETTLE_RE = re.compile(_CRYPTO_RE.pattern + "|" + _SETTLE_RAIL_RE.pattern, re.I)
+    r"kucoin|p2p|otc|escrow|payin|pay-?in|payout|pay-?out|settle\w*|hawala|"
+    r"angadia|hundi)(?![a-z])", re.I)
 
 # R1 asset<->number (price side only), R2 rate-word adjacency,
 # R3 bare ratio 1:NNN, R4 currency-marked NNN/- or Rs NNN or NNN INR,
@@ -380,16 +265,10 @@ _ACCT = (r"(?:\bbank\s*a/?c(?:count)?s?\b|\bcurrent\s*a/?c(?:count)?s?\b|"
          r"\bsaving[s]?\s*a/?c(?:count)?s?\b|\bsalary\s*a/?c(?:count)?s?\b|"
          r"\bcorporate\s*a/?c(?:count)?s?\b|\bcompany\s*a/?c(?:count)?s?\b|"
          r"\bfirm\s*a/?c(?:count)?s?\b|\bmerchant\s*a/?c(?:count)?s?\b|"
-         r"\bpersonal\s*a/?c(?:count)?s?\b|\ba/c\b|"
-         r"(?<!chart\sof\s)\baccounts?\b(?!\s*(?:executive|exec|assistant|asst|"
-         r"manager|mgr|team|dept|department|payable|receivable|head|officer|staff|"
-         r"intern|clerk|section|entry|entries|software|professional|opening|profile|"
-         r"job|jobs|walla|wale|book|books|audit))|"
+         r"\bpersonal\s*a/?c(?:count)?s?\b|\ba/c\b|\baccounts?\b|"
          r"\bkhata\b|\bkhaata\b)")
-_RENT = (r"(?:\bon\s*(?:rent|hire|lease)\b|\bfor\s*(?:rent|hire|lease)\b|"
-         r"\brent\s*(?:pe|par|per|paid|payment|advance|amount)\b|"
-         r"\brented\s*(?:out)?\b|\bleased\s*(?:out)?\b|\brent\s*out\b|"
-         r"\bkiray[ae]\b|\bkiraaye\b|\bhire\s*(?:pe|par|karna|karne|chahiye)\b|"
+_RENT = (r"(?:\bon\s*rent\b|\bfor\s*rent\b|\brent\s*(?:pe|par|per|paid|payment|advance|amount)\b|"
+         r"\brent(?:ed|al|als)?\b|\bkiray[ae]\b|\bkiraaye\b|\bhire[ds]?\b|\blease[ds]?\b|"
          r"\bbech\w*|\bsell\s*(?:your|apna|apni)\b)")
 _ACCOUNT_RENT_RE = re.compile(rf"(?:{_ACCT}).{{0,24}}?{_RENT}|{_RENT}.{{0,24}}?(?:{_ACCT})",
                               re.I | re.S)
@@ -399,8 +278,8 @@ _SOURCE_VERB = (r"(?:chahiye|chaiye|chahiy\w*|wanted|required|requirement|need(?
                 r"looking\s*for|arrange|provide|supply|hiring|holders?|"
                 r"bring\s*your\s*own|\bbyo\b|preferred|mangta|mangte)")
 _ACCOUNT_SOURCING_RE = re.compile(
-    rf"(?:{_ACCT})[^\w.!?;\n]{{0,3}}(?:\w+\s+){{0,3}}?{_SOURCE_VERB}"
-    rf"|{_SOURCE_VERB}[^\w.!?;\n]{{0,3}}(?:\w+\s+){{0,3}}?(?:{_ACCT})"
+    rf"(?:{_ACCT})\W{{0,3}}(?:\w+\s+){{0,3}}?{_SOURCE_VERB}"
+    rf"|{_SOURCE_VERB}\W{{0,3}}(?:\w+\s+){{0,3}}?(?:{_ACCT})"
     rf"|bring\s*your\s*own\s*bank", re.I)
 
 _ACCOUNT_USE_RE = re.compile(
@@ -441,13 +320,9 @@ _CASHOUT_RE = re.compile(
     r"|(?:paisa|amount|funds?|money)\s*(?:aayega|aata|आएगा|comes?|credit\w*)"
     r".{0,60}?(?:withdraw|nikal|nikaal|cash\s*out)", re.I | re.S)
 
-# The indemnity clause has to be an OFFER. Bare 'claim' was matching a victim
-# reporting his OWN frozen account ("account freeze ho gaya, branch wale bol
-# rahe hain claim ke liye passbook bhejo"), which is the opposite message.
 _FREEZE_COMP_RE = re.compile(
     r"\bfree[sz]\w*\b.{0,45}?(?:compensat\w*|cover\w*|guarantee\w*|bharenge|bhar\s*denge|"
-    r"denge|de\s*denge|zimmedari|responsib\w*|refund|"
-    r"claim\s*(?:milega|denge|karenge|settle\w*|process\w*))"
+    r"denge|de\s*denge|zimmedari|responsib\w*|refund|claim)"
     r"|(?:compensat\w*|cover|guarantee\w*|we\s*cover|hum\s*denge).{0,45}?\bfree[sz]\w*\b",
     re.I | re.S)
 
@@ -458,15 +333,6 @@ _SOF_WAIVER_RE = re.compile(
     r"|source\s*of\s*funds?\s*(?:not\s*required|nahi\s*|no\s*question)"
     r"|no\s*questions?\s*asked"
     r"|\bkoi\s*sawaal\s*nahi\b", re.I)
-
-# "7 day return, no questions asked" is every wholesaler's returns policy, not
-# a laundering waiver. Only exempts when NO literal source-of-funds phrase is
-# present, so "no questions asked on source of funds" still scores.
-_RETURNS_POLICY_RE = re.compile(
-    r"\b(?:return|returns|refund|exchange|replacement|warranty|guarantee|delivery|"
-    r"cancellation)\b[^.\n]{0,40}?no\s*questions?\s*asked"
-    r"|no\s*questions?\s*asked[^.\n]{0,40}?\b(?:return|returns|refund|exchange|"
-    r"replacement|warranty|policy)\b", re.I)
 
 # STRONG: names the predicate offence. Gaming/betting/casino settlement only.
 _PREDICATE_STRONG_RE = re.compile(
@@ -578,43 +444,13 @@ _EN_FAKE_RE = [
     re.compile(r"\buv\b[^.\n]{0,20}(?:test|pass|light|check)|(?:pass\w*|check)[^.\n]{0,15}\buv\b", re.I),
     re.compile(r"\b(?:pen|marker|iodine)\s*(?:and|&|\+|,)?\s*uv\b|\bpen\s*test\b", re.I),
     re.compile(r"\b(?:500|200|2000|100)\s*(?:&|and|,|\+)\s*(?:500|200|2000|100)\s*series\b", re.I),
-    # The counterfeit exchange ratio ("1:3" = one real rupee buys three fake).
-    # A bare 1:N is an ordinary token — lining ratio, aspect ratio, staffing
-    # ratio, counting-speed ratio — and matching it alone was the third en_hit
-    # that promoted counterfeit_note_mention(10) to counterfeit_note_offer(45),
-    # deleting a zari wholesaler, a tailor and a wedding-card printer. Require
-    # currency/goods context on one side of it.
-    re.compile(
-        r"\b1\s*:\s*[2-9]\b(?=[^.\n]{0,40}?"
-        r"(?:note|notes|currency|cash|rupee|rupees|₹|rs\b|maal|piece|pcs))"
-        r"|(?:note|notes|currency|cash|rupee|rupees|₹|rs\b|maal|piece|pcs)"
-        r"[^.\n]{0,40}?\b1\s*:\s*[2-9]\b", re.I),
+    re.compile(r"(?:ratio\s*)?\b1\s*:\s*[2-9]\b(?:\s*ratio)?", re.I),
     re.compile(r"\bmachine\s*(?:me|mein)?\s*(?:bhi\s*)?(?:chal|pass)\w*", re.I),
     re.compile(r"\b(?:note|notes)\s*(?:wale|wala|supply|supplier)\b", re.I),
 ]
-# C7: the product on sale is a DETECTOR, not the notes. A note-counting /
-# fake-note-detecting machine dealer quotes "fake note detection", "UV",
-# "security thread" and "500 and 200 series" in one breath and was reaching
-# counterfeit_note_offer (45) with courier + COD as the commercial leg.
-_NOTE_MACHINE_RE = re.compile(
-    r"\b(?:note|notes|currency|cash|money|bill|bundle)\s*(?:counting|counter|counters|"
-    r"detect\w*|checker|checking|sorting|sorter)\s*machines?\b"
-    r"|\bnote\s*counters?\b|\bfake[\s-]?notes?\s*detect\w*\b"
-    r"|\bcounterfeit\s*detect\w*\b|\buv\s*(?:lamp|torch|detector)\b", re.I)
-
 _DELIVERY_RE = re.compile(
     r"\bcourier\b|\bcash\s*on\s*delivery\b|\bcod\b|\bhome\s*delivery\b|\bdoor\s*step\b|"
     r"\bpan[\s-]?india\s*(?:delivery|courier|shipping)?\b|\bpersonal\s*meet\b|面交|快递|到付", re.I)
-
-# Sentence-scoping machinery for the counterfeit report veto (see _score_text).
-_REPORT_ANY_RE = re.compile(_CN_REPORT_STRONG_RE.pattern + "|" + _EN_REPORT_RE.pattern, re.I)
-# The fulfilment CHANNEL, in either language. _CN_FULFILMENT_RE alone is
-# CJK-only, which made a single appended 小心 / 注意 enough to delete an
-# ENGLISH counterfeit ad that ships "Courier all India, cash on delivery":
-# the caution veto asked "is a fulfilment channel present?" in Chinese only.
-# Offer verbs are deliberately NOT in here — 可过验钞机 is what the warning
-# shopkeeper says too, and folding it in flagged that red-team negative.
-_FULFILMENT_ANY_RE = re.compile(_CN_FULFILMENT_RE.pattern + "|" + _DELIVERY_RE.pattern, re.I)
 
 # ---------------------------------------------------------------- gambling
 _CN_BET_STRONG = re.compile(r"六合彩|时时彩|幸运飞艇|北京赛车|加拿大28|澳洲28|重庆时时|一分快三|"
@@ -632,15 +468,13 @@ _TIPS_FRAME_RE = re.compile(
     r"\b\d+\s*/\s*\d+\s*pass\b|\b\d+\s*me\s*se\s*\d+\s*pass\b|"
     r"\bpaid\s*group\b|\bvip\s*(?:group|signal|me)\b|\bfree\s*trial\b|"
     r"\b\d+\s*signal\b|\baccuracy\b", re.I)
-_CN_TIPS_RE = re.compile(r"内幕|分享|预测|计划|稳赚|回血|上岸|精准|大神|导师|带你|包赢|必中|"
-                         r"实力|信誉|回水|返水|代理")   # 走势/下注 = ordinary market and
-                                                       # legal-lottery chat, not a pitch
+_CN_TIPS_RE = re.compile(r"内幕|分享|预测|计划|稳赚|回血|上岸|精准|大神|导师|带你|包赢|必中|走势|"
+                         r"实力|信誉|回水|返水|代理|下注")
 _CN_AD_AGENCY = re.compile(r"代发|帮伐|专业代|精准代")
 
 # -------------------------------------------------------------------- IOCs
 _HANDLE_RE = re.compile(r"@[A-Za-z]\w{3,31}")
-_PHONE_RE = re.compile(r"\+\d[\d\s()\-]{7,17}\d"
-                       r"|(?<![\d+])(?:[6-9]\d{4}[\s-]?\d{5}|[6-9]\d{9})(?![\d])")
+_PHONE_RE = re.compile(r"\+\d[\d\s()\-]{7,17}\d")
 _TME_RE = re.compile(r"t\.me/[A-Za-z0-9_+]{4,}")
 # EVM (0x...) and Tron (T...) addresses — USDT's two main rails.
 _WALLET_RE = re.compile(r"\b(?:0x[a-fA-F0-9]{40}|T[1-9A-HJ-NP-Za-km-z]{33})\b")
@@ -658,17 +492,6 @@ _WARN_RE = re.compile(
     r"|\bthey\s*(?:advertise|advertised|offer|claim|pay|are\s*)\b|\bthese\s*people\b"
     r"|\bthis\s*(?:exact\s*)?(?:message|dm|ad)\s*(?:was|is)\b|\bi\s*got\s*this\b"
     r"|\breported\s*in\s*this\s*group\b|\bposted\s*this\b|\badded\s*me\s*to\b"
-    # C4: Hinglish + moderator half. Without these an anti-mule warning written
-    # by a Hindi-speaking group admin (M08) and the group's own pinned rules
-    # (M12) were read as offers and CONFIRMED for deletion. These are cheap
-    # tokens to append, which is exactly why attribution must never subtract
-    # from the score (C1) — it only gates, and only over a weak carrier.
-    r"|\bmat\s*(?:do|dena|kar|karo|karna|karein|bhejo|bheje|dijiye)\b|\blalach\b"
-    r"|\bjhans\w*|\bdhokha\b|\bthag\w*|\bfarzi\b|\bnakli\b|\bsav?dhan\b|\bsatark\b"
-    r"|\bfraud\s*(?:hai|he)\b|\bscam\s*(?:hai|he)\b|\bbach\s*ke\b|\bpolice\b"
-    r"|\bcyber\s*cell\b|\bgroup\s*rules?\b|\bwe\s*(?:delete|remove|ban)\b"
-    r"|\bdeleted?\s*on\s*sight\b|\bwill\s*be\s*(?:banned|removed)\b|\bnot\s*allowed\b"
-    r"|\bdo\s*not\s*post\b|\brepeat\s*offenders?\b|\badmin\s*notice\b"
     r"|提醒大家|请注意|注意防范|谨防|骗子|诈骗|警惕|派出所|警方|举报|查获|曝光|防范|小心|留意",
     re.I)
 
@@ -694,112 +517,6 @@ _ASK_RE = re.compile(
     r"\bshould\s*i\b|\bstupid\s*question\b|\banyone\s*know\b|\bkisi\s*ne\b|"
     r"\bsounds?\s*too\s*good\b|\bhas\s*anyone\b|\bcan\s*someone\b|\bany\s*idea\b|"
     r"\bkitne\s*din\b|\bwhere\s*can\s*i\b|哪里可以|有人知道", re.I)
-
-# ------------------------------------------------------- prohibition scoping
-# C4, second half. Describing a mechanic IN ORDER TO FORBID IT is not offering
-# it. Scoped to the SENTENCE so that a real ad cannot buy a blanket discount by
-# bolting "kisi ko mat do" onto the end of an otherwise complete offer: the
-# demotion only applies when EVERY occurrence of the mechanic sits inside a
-# prohibiting sentence.
-# CJK terminators included: without 。！？ a whole Chinese message was one
-# sentence, so every sentence-scoped rule degraded to a message-scoped one.
-_SENT_SPLIT_RE = re.compile(r"[.!?\n;。！？；]+")
-_PROHIBIT_RE = re.compile(
-    r"\bmat\s*(?:do|dena|de|dijiye|lo|lena|karo|karna|bhejo|karein)\b"
-    r"|\bnever\s*(?:give|rent|share|hand|sell|send)\b"
-    r"|\bdo\s*not\s*(?:give|rent|share|hand|sell|send|post|reply|engage)\b"
-    r"|\bdon'?t\s*(?:give|rent|share|hand|sell|send|post|reply|engage|fall)\b"
-    r"|\bkabhi\s*(?:mat|na)\b|\bnot\s*allowed\s*(?:in|here|on)\b"
-    # moderation half: the OBJECT has to be a post, not a person -
-    # "we delete slow payers" must not buy an ad a discount
-    r"|\bwe\s*(?:delete|remove|ban)\s*(?:\w+\s+){0,2}?(?:ads?|offers?|posts?|links?|"
-    r"messages?|spam|scams?|scammers?|listings?|these)\b"
-    r"|\b(?:ads?|offers?|posts?|links?|messages?|accounts?)\s*(?:will\s*be|are)\s*"
-    r"(?:banned|removed|deleted)\b|\bdeleted?\s*on\s*sight\b"
-    r"|\bband\s*hai\b|\bmana\s*hai\b|\bbecome\s*the\s*accused\b", re.I)
-
-# A warning names a BAD outcome for the reader; an ad names a good one. This is
-# the half of a Hinglish admin notice that carries no imperative: "paisa aayega
-# phir aap withdraw karke unke aadmi ko de doge, aur baad me account freeze ho
-# jayega". Only consulted when the message does NOT also offer to indemnify the
-# freeze — a real ad pairs "freeze" with "compensation hum denge", never with a
-# bare threat, so the indemnity offer switches this branch off.
-_CONSEQUENCE_RE = re.compile(
-    r"\bfreeze\s*ho\s*(?:jaye?ga|jaayega|jayegi|sakta\s*hai|sakti\s*hai)\b"
-    r"|\b(?:phas|fas)\s*(?:jaoge|jaaoge|sakte)\b|\bjail\s*(?:ja\w*|ho\s*sakt\w*)\b"
-    r"|\bcase\s*(?:ban|darj)\s*(?:jayega|jaayega|ho\s*(?:jayega|sakta))\b"
-    r"|\byour\s*account\s*(?:will\s*be|can\s*be|gets?)\s*fro[sz]en\b"
-    r"|\bfir\s*(?:ho|darj)\s*(?:jayega|sakti)\b"
-    # Hinglish con-vocabulary, at SENTENCE scope only. Nobody advertises their
-    # own offer as bait/fraud/fake, so a clause that calls the mechanic 'lalach'
-    # or 'jhansa' is reporting it. Message-scope use of these words is what the
-    # kill-switch did; sentence scope is the safe version of the same evidence.
-    r"|\blalach\b|\bjhans\w*|\bdhokha\b|\bthag\w*|\bfarzi\b|\bnakli\b"
-    r"|\bsav?dhan\b|\bsatark\b|\bbach\s*ke\b|\bfraud\s*(?:hai|he)\b"
-    r"|\bscam\s*(?:hai|he)\b", re.I)
-
-# The moderation half on its own, used to scope RATE quotes. "we delete USDT to
-# INR at 128 type rate ads" is a rule about ads, not an ad.
-_MODERATION_RE = re.compile(
-    r"\bwe\s*(?:delete|remove|ban)\b|\bdeleted?\s*on\s*sight\b|\bgroup\s*rules?\b"
-    r"|\b(?:ads?|offers?|posts?|links?|messages?|accounts?)\s*(?:will\s*be|are)\s*"
-    r"(?:banned|removed|deleted)\b|\brepeat\s*offenders?\b"
-    r"|\bnot\s*allowed\s*(?:in|here|on)\b|\badmin\s*notice\b", re.I)
-
-
-@lru_cache(maxsize=16)
-def _segments(t):
-    """Sentence spans, with SOFT-WRAPPED lines rejoined.
-
-    Telegram hard-wraps: "...paisa aayega phir aap withdraw karke\nunke aadmi
-    ko de doge, aur account freeze ho jayega." is one sentence on two lines, and
-    scoping to the raw lines put the mechanic and the warning in different
-    segments. A line break is treated as a continuation of the same sentence
-    only when the previous line ends in a joining punctuation mark or the next
-    line starts lowercase — which is what a wrapped sentence looks like and is
-    NOT what an ad's line-per-item rate sheet looks like ("White line - 118 /
-    Grey line - 124"), so a bulleted ad stays finely segmented."""
-    raw, pos = [], 0
-    for m in _SENT_SPLIT_RE.finditer(t + "."):
-        raw.append([pos, m.start(), m.group(0)])
-        pos = m.end()
-    out = []
-    for a, b, sep in raw:
-        seg = t[a:b]
-        if not seg.strip():
-            continue
-        if out:
-            pa, pb, psep = out[-1]
-            prev = t[pa:pb].rstrip()
-            if ("\n" in psep and not psep.strip(" \t\n")
-                    and (prev.endswith((",", "-", "—", "–", ":", "/"))
-                         or seg.lstrip()[:1].islower())):
-                out[-1] = [pa, b, sep]     # soft wrap: same sentence
-                continue
-        out.append([a, b, sep])
-    return tuple((a, b) for a, b, _ in out)
-
-
-def _sentence_spans(t, rx):
-    """Character ranges of the sentences of t that match rx."""
-    return [(a, b) for a, b in _segments(t) if rx.search(t[a:b])]
-
-
-def _prohibited_spans(t, consequences: bool = True):
-    """Character ranges of sentences that PROHIBIT rather than offer."""
-    spans = _sentence_spans(t, _PROHIBIT_RE)
-    if consequences:
-        seen = set(spans)
-        spans = spans + [s for s in _sentence_spans(t, _CONSEQUENCE_RE) if s not in seen]
-    return spans
-
-
-def _only_in_prohibition(rx, t, spans):
-    ms = list(rx.finditer(t))
-    if not ms or not spans:
-        return False
-    return all(any(a <= m.start() and m.end() <= b for a, b in spans) for m in ms)
-
 
 # ------------------------------------------------------------ DOMAIN lexicons
 # Evidence about WHAT TOPIC this is. These are per-family vetoes only.
@@ -893,36 +610,14 @@ def _score_text(text: str, mkt: float, allow_rate: bool = True) -> list:
     sig = []
     A = sig.append
 
-    # A settlement-rail word only anchors when something else in the message is
-    # already laundering-shaped: the account is the product, an IVTS channel is
-    # named, or the predicate offence is stated. "Weekly settlement, payout to
-    # your bank account" is a gig-work payout card, not a crypto rail.
-    _rail_ctx = (bool(_ACCOUNT_RENT_RE.search(t)) or bool(_PER_ACCOUNT_PRICE_RE.search(t))
-                 or bool(_ACCOUNT_USE_RE.search(t)) or bool(_IVTS_RE.search(t))
-                 or bool(_PREDICATE_STRONG_RE.search(t)) or bool(_FREEZE_COMP_RE.search(t))
-                 or bool(_RECRUIT_PHRASE_RE.search(t)) or bool(_PAYIN_RECRUIT_RE.search(t)))
-    anchored = bool(_CRYPTO_RE.search(t)) or (bool(_SETTLE_RAIL_RE.search(t)) and _rail_ctx)
+    anchored = bool(_CRYPTO_SETTLE_RE.search(t))
 
     # ---- RATE family ---------------------------------------------------
     # A rate is only STRONG evidence with a crypto/settlement anchor. Without
     # one it stays on the board at a WEAK weight, because 103.5-198 is also
     # onion, silver, tempered glass and a Bank Nifty option premium.
-    # C5: FX is NOT a kill-switch upstream of its own veto any more. Rates are
-    # always extracted; the FX handling is (a) the per-span adjacency filter
-    # inside extract_rates and (b) the rate_fx_veto in _domain_vetoes. One
-    # appended currency token used to delete the whole RATE family.
-    rates = extract_rates(t, mkt) if allow_rate else []
-    # C4 extended to RATE: a pinned moderation rule that names the ad it bans
-    # ("we delete on sight ... USDT to INR at 128 type rate ads") quotes the
-    # price. All-or-nothing: if ANY in-band rate sits outside the moderation
-    # clause the message is scored as a rate quote in the normal way.
-    _mod = _sentence_spans(t, _MODERATION_RE)
-    if rates and _mod and all(any(a <= sp[0] and sp[1] <= b for a, b in _mod)
-                              for _, sp, _ in rates):
-        A(Signal("rate_quoted_inside_moderation_rule", 10, "WEAK",
-                 f"every in-band rate ({sorted({r[0] for r in rates})}) occurs inside a "
-                 f"group-moderation clause — the rule names the ad it bans"))
-        rates = []
+    fx_msg = bool(_FX_CTX.search(t))
+    rates = extract_rates(t, mkt) if (allow_rate and not fx_msg) else []
     if rates:
         vals = sorted({r[0] for r in rates})
         forms = sorted({r[2] for r in rates})
@@ -953,7 +648,7 @@ def _score_text(text: str, mkt: float, allow_rate: bool = True) -> list:
     tiers = {x for x in _FUND_TIERS if x in low}
     if len(tiers) >= 2:
         A(Signal("tiered_fund_menu", 20, "RATE", f"fund-tier menu {sorted(tiers)}"))
-    if allow_rate:
+    if allow_rate and not fx_msg:
         ap = {m.group(1) for m in _ACCT_TYPE_PRICE_RE.finditer(t)
               if _inband(float(m.group(1)), mkt)}
         if len(ap) >= 2:
@@ -963,17 +658,8 @@ def _score_text(text: str, mkt: float, allow_rate: bool = True) -> list:
                      + ("" if anchored else " (no crypto/settlement anchor: weak)")))
 
     # ---- ACCOUNT family ------------------------------------------------
-    # An offer to indemnify the freeze switches the consequence branch off: an
-    # advertiser who mentions freezing always sells the cover for it.
-    _proh = _prohibited_spans(t, consequences=not _FREEZE_COMP_RE.search(t))
     rent_offer = bool(_ACCOUNT_RENT_RE.search(t))
-    if rent_offer and _only_in_prohibition(_ACCOUNT_RENT_RE, t, _proh):
-        rent_offer = False
-        A(Signal("account_rental_vocabulary_in_prohibition", 10, "WEAK",
-                 "account-rental wording occurs only inside a prohibition / moderation "
-                 "clause ('kiraye pe mat do', 'we delete on sight') - describing the "
-                 "offer in order to forbid it"))
-    elif rent_offer:
+    if rent_offer:
         A(Signal("account_rental_offer", 30, "ACCOUNT",
                  "bank account bound to a rent/hire/sale verb in the same clause"))
     per_acct_price = bool(_PER_ACCOUNT_PRICE_RE.search(t))
@@ -1004,20 +690,13 @@ def _score_text(text: str, mkt: float, allow_rate: bool = True) -> list:
                  "requires unburnt / clean-history accounts"))
 
     # ---- MECHANIC family -----------------------------------------------
-    if _CASHOUT_RE.search(t) and _only_in_prohibition(_CASHOUT_RE, t, _proh):
-        A(Signal("cashout_vocabulary_in_prohibition", 10, "WEAK",
-                 "the withdraw-and-hand-over mechanic is described only inside a "
-                 "prohibiting / consequence-warning clause ('paisa aayega, aap "
-                 "withdraw karke de doge, aur account freeze ho jayega')"))
-    elif _CASHOUT_RE.search(t):
+    if _CASHOUT_RE.search(t):
         A(Signal("cashout_courier_mechanic", 30, "MECHANIC",
                  "instructs recruit to withdraw incoming funds and hand cash over"))
     if _FREEZE_COMP_RE.search(t):
         A(Signal("freeze_compensation_offer", 30, "MECHANIC",
                  "indemnifies account freezes — concedes funds are traceable proceeds"))
-    if _SOF_WAIVER_RE.search(t) and not (
-            _RETURNS_POLICY_RE.search(t)
-            and not re.search(r"source\s*of\s*(?:funds?|money)", t, re.I)):
+    if _SOF_WAIVER_RE.search(t):
         A(Signal("source_of_funds_waiver", 30, "MECHANIC",
                  "explicitly refuses to check source of funds"))
     if _PREDICATE_STRONG_RE.search(t):
@@ -1076,26 +755,9 @@ def _score_text(text: str, mkt: float, allow_rate: bool = True) -> list:
     cn_offer = bool(_CN_OFFER_VERB.search(t)) and bool(_CN_COMMERCE.search(t))
     delivery = bool(_DELIVERY_RE.search(t))
     commercial = delivery or bool(_CN_COMMERCE.search(t)) or _fan >= 1
-    # C7: the product on sale is a DETECTOR, not the notes: no counterfeit
-    # ratio, no CN counterfeit noun, no "notes available/supply" phrasing.
-    appliance = (bool(_NOTE_MACHINE_RE.search(t)) and not cn_noun
-                 and not _EN_FAKE_RE[5].search(t)
-                 and not re.search(r"\b(?:notes?|currency)\s*(?:available|for\s*sale|"
-                                   r"supply|supplier|milega|sale)\b", t, re.I))
-    # The STRONG report veto used to be message-scoped, which made it the
-    # cheapest bypass in the whole detector: appending the single token
-    # "police" / "警方" / "cyber cell" to a live counterfeit ad took it from
-    # CONFIRMED(60) to CLEAN(10) — worse than the C1 kill-switch, because it is
-    # a hard boolean. It is now scoped: a report marker only vetoes when the
-    # SAME sentence also carries the fulfilment language it is quoting back at
-    # the reader ("警方提示：有人通过快递销售假钞", "police busted a racket
-    # couriering replica notes"). A token bolted onto a different line of the
-    # ad no longer counts. The CAUTION branch keeps its own fulfilment guard.
-    strong_report = any(_FULFILMENT_ANY_RE.search(t[a:b])
-                        for a, b in _sentence_spans(t, _REPORT_ANY_RE))
-    reported = (appliance
-                or strong_report
-                or (bool(_CN_CAUTION_RE.search(t)) and not _FULFILMENT_ANY_RE.search(t)))
+    reported = (bool(_CN_REPORT_STRONG_RE.search(t))
+                or bool(_EN_REPORT_RE.search(t))
+                or (bool(_CN_CAUTION_RE.search(t)) and not _CN_FULFILMENT_RE.search(t)))
     if not reported and ((cn_noun and cn_offer) or (en_hits >= 3 and commercial)):
         A(Signal("counterfeit_note_offer", 45, "COUNTERFEIT",
                  f"counterfeit-note OFFER (cn_noun={cn_noun}, cn_offer={cn_offer}, "
@@ -1171,7 +833,7 @@ def _domain_vetoes(carrier: str, content: list) -> list:
         if amt > 0:
             out.append(Signal(name, -amt, "VETO", detail))
 
-    if _FX_CTX.search(c) and not _CRYPTO_SETTLE_RE.search(c):
+    if _FX_CTX.search(c):
         veto("rate_fx_veto", _RATE_SIGNALS, 40,
              "GBP/EUR/remittance context — the INR quote is a forex rate, not a premium")
     if _PAYOPS_RE.search(c) or _COMPLIANCE_RE.search(c):
@@ -1196,24 +858,8 @@ def _confirms(sigs: list) -> bool:
             and any(s.name == "counterfeit_note_offer" for s in sigs))
 
 
-def _carrier_is_real(carrier: str, quoted: str) -> bool:
-    """C3. Quote marks are attacker-controlled: two characters around the whole
-    ad emptied the carrier and dropped every CONFIRMED positive out of the
-    delete tier. A quoted span is only treated as somebody ELSE's words when
-    the author left a real voice of their own around it — enough carrier text
-    to be a sentence, AND at least one attribution marker in that carrier
-    (a warning, a civic reference, a research frame, or a question). A bare
-    pair of quotes with no authorial comment is just the ad, in quotes."""
-    bare = carrier.replace(chr(9251) + 'QUOTED' + chr(9251), ' ').strip()
-    if len(bare) < 15:
-        return False
-    return bool(_attribution_suppressors(carrier, ''))
-
-
 def classify(text: str, market_rate: float = MARKET_USDT_INR) -> Verdict:
     carrier, quoted = split_quotes(text)
-    if quoted.strip() and not _carrier_is_real(carrier, quoted):
-        carrier, quoted = text, ''
 
     full_sig = _score_text(text, market_rate)
     car_sig = _score_text(carrier, market_rate)
@@ -1222,7 +868,7 @@ def classify(text: str, market_rate: float = MARKET_USDT_INR) -> Verdict:
     veto_car = _domain_vetoes(carrier, car_sig)
 
     signals = full_sig + veto_full + attr
-    score = max(0, sum(s.weight for s in full_sig) + sum(s.weight for s in veto_full))
+    score = max(0, sum(s.weight for s in signals))
 
     # Carrier = what the author asserts in their own voice. car_content is the
     # evidence there after domain vetoes; car_score also applies attribution.
@@ -1252,10 +898,10 @@ def classify(text: str, market_rate: float = MARKET_USDT_INR) -> Verdict:
         elif n_ioc < 1:
             tier = "LIKELY_SCAM"
             notes.append("gate: no contact IOC (no reachable advertiser)")
-        elif car_content < _TIER_CONFIRMED or not _confirms(strong_car):
+        elif car_score < _TIER_CONFIRMED or not _confirms(strong_car):
             tier = "LIKELY_SCAM"
             notes.append("gate: carrier text alone does not confirm (quoted content)")
-        elif fired_attr and not _confirms(strong_car):
+        elif fired_attr and car_content < _TIER_CONFIRMED:
             # ATTRIBUTION only, and only against a weak carrier. If the author's
             # own unquoted text is a complete ad, a sprinkled "beware" buys
             # nothing. Domain suppressors never reach this branch.
@@ -1269,25 +915,11 @@ def classify(text: str, market_rate: float = MARKET_USDT_INR) -> Verdict:
     # scammer appends "beware of scams, call 1930" to their own unquoted ad
     # and buys a free pass. Verified bypass; do not relax.
     if tier in ("LIKELY_SCAM", "CONFIRMED_PATTERN") and (
-            not _confirms(strong_car) and (
             (len(fired_attr & hard) >= 2 and car_content < _TIER_CONFIRMED)
-            or (len(fired_attr & hard) >= 1 and car_content < _TIER_LIKELY))):
-        # WATCH, not CLEAN: the correctness build dropped these to CLEAN, which
-        # is what POLICY ignores entirely. A message that scored into the flag
-        # tier on content and was spared only by attribution framing is exactly
-        # the thing a human should still be able to see. Stricter of the two.
+            or (len(fired_attr & hard) >= 1 and car_content < _TIER_LIKELY)):
         tier = "WATCH"
         notes.append(f"cap: warn/report/ask framing (markers={sorted(fired_attr & hard)}, "
                      f"carrier_content={car_content}) -> WATCH")
-
-    # --- C9 / precision D9: the flag tier needs a strong family --------------
-    # WEAK signals alone (commission + fast settlement + throughput + home-job
-    # framing + contact fan-out) summed past 35 with no RATE / ACCOUNT /
-    # MECHANIC / COUNTERFEIT / GAMBLING evidence anywhere. That is a scoring
-    # accident, not a pattern: nothing in the message names the offence.
-    if tier == "LIKELY_SCAM" and not strong_full:
-        tier = "WATCH"
-        notes.append("gate: no strong family (weak corroborators only) -> WATCH")
 
     return Verdict(score=score, tier=tier, signals=signals,
                    iocs=extract_iocs(text) if score >= _TIER_WATCH else {},

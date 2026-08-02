@@ -1,5 +1,20 @@
 # detector v2 — validated candidate, NOT shipped
 
+> **Round 2 (2026-08-02).** The two blocking defects below were fixed in
+> `detector_v2.py`, and three independent red-teams then broke *that*. The
+> single most important finding: **a group admin warning members off mule ads
+> in Hinglish was CONFIRMED and would be DELETED**, as were the group's own
+> pinned moderation rules — the detector cannot yet tell forbidding a mechanic
+> from offering it, because the warning lexicon is English + CJK only. Also
+> found: attribution suppressors were still summed into the score, so appending
+> anti-scam boilerplate silenced 23 of 24 ads (worse than the kill-switch it
+> replaced); a quadratic ReDoS in `_BLOCKQUOTE_RE` (69 ms at 4096 chars); and
+> wrapping an ad in quote marks — 2 characters — dropped 19 of 19 out of the
+> delete tier. Each red-team shipped a verified fix branch
+> (`detector_v2_precision_patch.py`, `detector_v2_correctness_fixes.py`); a
+> merged build is in `detector_v2_merged.py`. Read `MEASURED.md` for the
+> numbers before trusting any of it.
+
 A worked upgrade for `scamshield/detector.py`, with its labelled corpus, a
 working prototype, and the red-team harnesses that broke it. **Nothing here is
 wired into the live bot.** Read this before shipping any of it.
