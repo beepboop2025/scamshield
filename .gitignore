@@ -5,3 +5,5 @@
 *.session-journal
 __pycache__/
 *.log
+evade_*.py
+redteam_evasion_*.py
