@@ -14,6 +14,7 @@ the observable we care about.
 """
 
 import importlib
+import re
 import sys
 import tempfile
 import types
@@ -178,21 +179,86 @@ class GuardianCopyMatchesBehaviour(unittest.TestCase):
         self.assertNotIn("don't monitor groups", text)
 
     def test_copy_and_handler_never_disagree(self):
-        """The invariant itself, stated once, checked in both states."""
+        """The invariant itself, stated once, checked in both states.
+
+        The first version of this test derived `claims_groups` from a
+        three-phrase list, which is a blocklist of the sentence that used to
+        be there rather than the property. Rewording the false promise to
+        "add me to your group as an admin and I'll keep it clean" left the
+        suite green while /start again told users to add a bot that cannot
+        join. The hole was one-directional and in the dangerous direction.
+
+        So this matches the SHAPE of an invitation, an imperative to add the
+        bot somewhere plus a group word nearby, rather than any fixed wording.
+        A promise phrased in a way this misses is still possible, which is why
+        the frozen-copy test below backs it up: that one fails on ANY edit to
+        either branch, so a reword has to be made deliberately in the test too.
+        """
+        invite = re.compile(
+            r"add\s+(?:me|this\s+bot|@?\w+)\b[^.!?]{0,80}?\b(?:group|chat|channel)"
+            r"|\b(?:group|chat|channel)\b[^.!?]{0,80}?\badd\s+(?:me|this\s+bot)",
+            re.I)
         for env in (None, "0", "1"):
             with self.subTest(SCAMSHIELD_GUARDIAN=env):
                 mod = _load_bot(env)
                 cbs = _registered_callbacks(mod)
                 handler_on = mod.on_group in cbs
-                text = mod.start_text().lower()
-                claims_groups = any(
-                    p in text for p in ("add me to a group",
-                                        "watch every message there",
-                                        "watch it for you"))
+                text = mod.start_text()
+                claims_groups = bool(invite.search(text))
                 self.assertEqual(
                     claims_groups, handler_on,
-                    "/start advertises group protection = %s but the group "
-                    "handler is registered = %s" % (claims_groups, handler_on))
+                    "/start invites the user to add the bot to a group = %s "
+                    "but the group handler is registered = %s\ncopy: %s"
+                    % (claims_groups, handler_on, text))
+
+    def test_the_invite_detector_catches_a_rewording(self):
+        """Pin the detector itself, since a blocklist passed for a reword.
+
+        The first string is the exact rewrite that defeated the old test.
+        """
+        invite = re.compile(
+            r"add\s+(?:me|this\s+bot|@?\w+)\b[^.!?]{0,80}?\b(?:group|chat|channel)"
+            r"|\b(?:group|chat|channel)\b[^.!?]{0,80}?\badd\s+(?:me|this\s+bot)",
+            re.I)
+        must_catch = [
+            "I don't monitor groups passively, but add me to your group as an "
+            "admin and I'll keep it clean.",
+            "You can also add me to a group as admin and I'll watch every "
+            "message there.",
+            "Add me to any chat and I will protect it.",
+        ]
+        must_pass = [
+            "Forward me any suspicious crypto/payment message and I'll tell "
+            "you if it matches known money-mule and scam-ad patterns.",
+            "I work in this private chat only. I don't monitor groups, so "
+            "adding me to one will not protect it.",
+        ]
+        for s in must_catch:
+            self.assertTrue(invite.search(s), "missed an invitation: %s" % s)
+        for s in must_pass:
+            self.assertFalse(invite.search(s), "false positive on: %s" % s)
+
+    def test_both_copy_branches_are_frozen(self):
+        """Backstop: any edit to either branch must be deliberate.
+
+        The shape detector above can be out-thought by a phrasing nobody
+        anticipated. This one cannot: it fails on any change to either
+        sentence, forcing whoever edits the copy to come here and say so.
+        """
+        off = _load_bot(None).start_text()
+        on = _load_bot("1").start_text()
+        self.assertEqual(
+            off,
+            "Forward me any suspicious crypto/payment message and I'll tell "
+            "you if it matches known money-mule and scam-ad patterns, and how "
+            "to report it. I work in this private chat only. I don't monitor "
+            "groups, so adding me to one will not protect it.")
+        self.assertEqual(
+            on,
+            "Forward me any suspicious crypto/payment message and I'll tell "
+            "you if it matches known money-mule and scam-ad patterns, and how "
+            "to report it. You can also add me to a group as admin and I'll "
+            "watch every message there.")
 
     def test_guardian_implementation_is_preserved_not_deleted(self):
         """Turning the mode off must not have gutted the code path."""
