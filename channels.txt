@@ -7,5 +7,20 @@
 # @username visible), join them manually from the account first, then add
 # the id here.
 #
-# Seed: operator channel observed in the 2026-07 screenshots.
-GJpay012
+# Riptide's breachwatch also reads this file (breachwatch.default_channels)
+# and scans it LOGIN-FREE via t.me/s/, which can only ever see PUBLIC
+# channels. A private handle listed here is not a quiet no-op: it makes the
+# nightly `riptide daily` breach step report "0 of N channels answered" and
+# exit nonzero, because it correctly refuses to publish a 0.0/CALM reading
+# built from no posts. Keep public handles here; leave private ones
+# commented with the reason.
+
+# Public breach/leak channels — reachable login-free.
+falconfeedsio
+cybernews
+vx_underground
+
+# Seed: operator channel observed in the 2026-07 screenshots. PRIVATE, so
+# t.me/s/ returns nothing for it. Left here as a record, not as a target;
+# re-enable only for a logged-in scamshield path, never for login-free.
+# GJpay012
