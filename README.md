@@ -9,8 +9,16 @@ ScamShield protects at three points instead:
 1. **Shield mode** — anyone forwards a suspicious message to the bot in
    private chat → instant verdict + scam-mechanics explanation + official
    reporting channels (1930 / cybercrime.gov.in).
-2. **Guardian mode** — added as admin to a group, scores every message and
-   acts per `POLICY` in `bot.py` (flag / delete / ban per tier).
+2. **Guardian mode (OFF by default, not shipped on)** — would score every
+   message in a group it is admin of and act per `POLICY` in `bot.py`
+   (flag / delete / ban per tier). The code is complete but the handler is
+   only registered when `SCAMSHIELD_GUARDIAN=1`, and it needs two
+   @BotFather settings that are currently off: "Allow Groups?" ENABLED and
+   "Group Privacy" DISABLED. Turning on group joins *without* also turning
+   off privacy mode gives you a bot that joins, receives almost nothing,
+   and therefore reports nothing, which is indistinguishable from a clean
+   group. Do not tell anyone a group is protected until `getMe` shows both
+   `can_join_groups` and `can_read_all_group_messages` true.
 3. **IOC pipeline** — every flagged message's handles, phones, channels and
    USDT wallets land in SQLite (`/digest` to dump). Wallets are the high-value
    indicator: Tether freezes addresses on law-enforcement request.
