@@ -170,6 +170,14 @@ pseudonymized sources. Scaling should add source-registry metadata, collector
 heartbeats, lag, language recall sets, and per-family precision/recall—not a
 marketing claim of total coverage.
 
+The owner-only `/liquidity` view uses a separate UTC-day coverage ledger and
+operator-reviewed monetary observations. Message text is never converted into
+a monetary fact automatically. Reviews remain bound to the assessment hash and
+HMAC-pseudonymized source; the rendered pulse contains counts and gated sums,
+not source pseudonyms or raw message fragments. Existing all-time coverage is
+not backfilled into daily windows because doing so would manufacture temporal
+precision the original table did not record.
+
 ## Reliability and failure modes
 
 - Rate providers run concurrently behind a 15-minute cache. Stale/fallback state

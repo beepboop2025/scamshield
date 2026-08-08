@@ -31,6 +31,38 @@ collection errors, surface type, and an optional HMAC-pseudonymized source.
 This is the basis for expanding toward broad Telegram coverage without claiming
 visibility the platform has not granted.
 
+## Reviewed liquidity pulse
+
+The owner-only `/liquidity` command renders a UTC-day pulse from measured daily
+coverage and explicitly reviewed monetary observations. It never extracts an
+amount from message text or treats a suspicious message as realized proceeds.
+Sparse coverage is shown as `INSUFFICIENT_DATA`, not zero activity.
+
+To add one reviewed observation, reply either to the original suspicious
+message after ScamShield has scanned it or to a configured-channel alert that
+contains an opaque `Review ID`:
+
+```text
+/review_amount <measure> <currency> <amount> <rail> <verification> <confidence> [usd=<amount>] [fx=<https-url-or-urn>]
+```
+
+For example, an owner recording a victim-reported USD loss could use:
+
+```text
+/review_amount victim_reported_loss USD 125 bank_transfer victim_report low
+```
+
+Supported Telegram review classes are `amount_mentioned`, `payment_requested`,
+`victim_reported_loss`, and `verified_transfer`. The latter two have stricter
+verification rules enforced by the measurement contract. Non-USD values may be
+counted without normalization; a sum remains withheld unless the review also
+supplies `usd=` and an `fx=` provenance URL or URN.
+
+Use `/liquidity` for the current UTC day or `/liquidity YYYY-MM-DD` for an
+earlier day. Only messages observed after this daily ledger was deployed appear
+in it; historical all-time coverage is deliberately not backfilled into
+invented daily figures.
+
 ## Two Telegram modes
 
 1. **Shield mode** is always on. A user forwards a suspicious message in a

@@ -268,6 +268,12 @@ class GuardianCopyMatchesBehaviour(unittest.TestCase):
         self.assertTrue(callable(mod.on_group))
         self.assertEqual(mod.POLICY["CONFIRMED_PATTERN"], "delete")
 
+    def test_owner_liquidity_commands_are_registered(self):
+        mod = _load_bot(None)
+        callbacks = _registered_callbacks(mod)
+        self.assertIn(mod.cmd_liquidity, callbacks)
+        self.assertIn(mod.cmd_review_amount, callbacks)
+
     def test_docstring_and_switch_document_both_botfather_toggles(self):
         """A future reader must be able to find how to turn this on."""
         src = (Path(__file__).resolve().parents[1] / "bot.py").read_text()

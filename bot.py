@@ -21,12 +21,17 @@ Setup:
   2. export SCAMSHIELD_TOKEN=...  SCAMSHIELD_OWNER_ID=<your numeric TG id>
   3. pip install -r requirements.txt && python bot.py
 
-Owner commands: /digest — dump the IOC table collected so far.
+Owner commands:
+  /digest — dump the IOC table collected so far.
+  /coverage — show measured collection coverage.
+  /liquidity [YYYY-MM-DD] — show the reviewed UTC-day liquidity pulse.
+  /review_amount ... — bind one explicit monetary review to a scanned message.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import html
 import logging
 import os
@@ -60,6 +65,14 @@ from telegram.ext import (Application, CommandHandler, ContextTypes,
 from scamshield.analysis import AnalysisService, ObservationContext
 from scamshield.detector import Verdict
 from scamshield.iocstore import IocStore
+from scamshield.liquidity_ui import (
+    parse_pulse_day,
+    parse_review_observation,
+    render_liquidity_pulse,
+    render_review_confirmation,
+    review_id_from_alert,
+    review_usage,
+)
 from scamshield.rendering import render_analysis
 
 logging.basicConfig(level=logging.INFO)
@@ -201,6 +214,76 @@ async def cmd_coverage(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def cmd_liquidity(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id != OWNER_ID:
+        return
+    try:
+        day = parse_pulse_day(context.args)
+        pulse = STORE.daily_liquidity_pulse(day)
+    except (TypeError, ValueError) as exc:
+        await update.message.reply_text(html.escape(str(exc)), parse_mode=ParseMode.HTML)
+        return
+    await update.message.reply_text(
+        render_liquidity_pulse(pulse), parse_mode=ParseMode.HTML,
+    )
+
+
+async def cmd_review_amount(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """Persist one owner-reviewed amount without auto-reading message values."""
+    if update.effective_user.id != OWNER_ID:
+        return
+    message = update.message
+    reply = message.reply_to_message if message else None
+    text = (reply.text or reply.caption or "") if reply else ""
+    if not text.strip():
+        await message.reply_text(review_usage(), parse_mode=ParseMode.HTML)
+        return
+    alert_review_id = review_id_from_alert(text)
+    if alert_review_id:
+        review_context = STORE.assessment_review_context_by_id(alert_review_id)
+    else:
+        source_context = ObservationContext.create(
+            text,
+            surface="private_submission",
+            authorization="user_submitted",
+            raw_source=f"telegram-user:{update.effective_user.id}",
+        )
+        if not source_context.source_pseudonym:
+            await message.reply_text(
+                "The production pseudonym key is unavailable; refusing monetary review."
+            )
+            return
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        review_context = STORE.assessment_review_context(
+            digest,
+            surface="private_submission",
+            source_pseudonym=source_context.source_pseudonym,
+        )
+    if review_context is None:
+        await message.reply_text(
+            "Reply to a suspicious message scanned after liquidity tracking was enabled. "
+            "Clean or previously unseen messages cannot become monetary evidence."
+        )
+        return
+    try:
+        observation = parse_review_observation(context.args, review_context)
+        STORE.record_monetary_observation(
+            observation, assessment_id=review_context["assessment_id"],
+        )
+    except (TypeError, ValueError) as exc:
+        await message.reply_text(
+            f"{html.escape(str(exc))}\n\n{review_usage()}",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    await message.reply_text(
+        render_review_confirmation(observation), parse_mode=ParseMode.HTML,
+    )
+
+
 def _record_result(result, text: str) -> None:
     if result.iocs:
         STORE.record(result.iocs, sample=text if STORE_RAW_SAMPLES else "")
@@ -215,7 +298,10 @@ async def on_private(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     if not text.strip():
         return
     collection = ObservationContext.create(
-        text, surface="private_submission", authorization="user_submitted",
+        text,
+        surface="private_submission",
+        authorization="user_submitted",
+        raw_source=f"telegram-user:{update.effective_user.id}",
     )
     result = await asyncio.to_thread(
         ANALYZER.analyze, text, collection=collection,
@@ -305,6 +391,8 @@ def main() -> None:
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("digest", cmd_digest))
     app.add_handler(CommandHandler("coverage", cmd_coverage))
+    app.add_handler(CommandHandler("liquidity", cmd_liquidity))
+    app.add_handler(CommandHandler("review_amount", cmd_review_amount))
     app.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & ~filters.COMMAND, on_private))
     # Guardian mode: registered only when explicitly switched on. See the

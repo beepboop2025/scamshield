@@ -22,7 +22,6 @@ import logging
 import os
 import urllib.parse
 import urllib.request
-from pathlib import Path
 
 from telethon import TelegramClient, events
 
@@ -119,7 +118,11 @@ async def main() -> None:
                 ANALYZER.analyze, text, collection=collection,
             )
         except Exception as exc:
-            STORE.record_collection_error(surface, collection.source_pseudonym)
+            STORE.record_collection_error(
+                surface,
+                collection.source_pseudonym,
+                observed_at=collection.observed_at,
+            )
             log.exception("analysis failed for %s: %s", event.chat_id, exc)
             return
         if result.iocs:
@@ -138,7 +141,8 @@ async def main() -> None:
             await asyncio.to_thread(
                 alert_owner,
                 f"🛡 {result.overall_tier} (score {result.overall_score}) "
-                f"in “{title}” [{families or 'general'}]\n\n{text[:250]}",
+                f"in “{title}” [{families or 'general'}]\n\n{text[:250]}"
+                f"\n\nReview ID: {result.provenance.assessment_id}",
             )
             log.info(
                 "%s in %s (score %s)",

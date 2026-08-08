@@ -139,5 +139,13 @@ journalctl -u scamshield-bot -u scamshield-monitor --since today
 sudo -u scamshield test -s /var/lib/scamshield/review/scamshield-review.jsonl
 ```
 
+In the owner bot chat, `/liquidity` displays the current UTC-day coverage and
+reviewed monetary pulse. Reply to a newly scanned suspicious message with
+`/review_amount` and no arguments to receive the exact review syntax.
+Configured-channel alerts include an opaque `Review ID` and may be reviewed by
+replying to the alert the same way. The SQLite schema migrates additively on
+service start; existing assessments and IOC history remain intact, while exact
+daily coverage begins at deployment.
+
 The review queue is not an automatic accusation feed. It excludes exact IOC
 values and message fragments and remains marked for human review.
