@@ -138,8 +138,7 @@ rollback() {
 atomic_link "$pal_current" "$pal_release"
 atomic_link "$scam_current" "$scam_release"
 install_runtime_contract "$scam_release"
-systemctl enable scamshield-bot.service scamshield-monitor.service \
-  scamshield-feed.timer >/dev/null
+systemctl enable scamshield-bot.service scamshield-feed.timer >/dev/null
 
 if [[ "$mode" != "--no-restart" ]]; then
   started_at="$(date --iso-8601=seconds)"

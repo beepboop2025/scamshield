@@ -133,14 +133,16 @@ fi
 
 cat <<'EOF'
 
-ScamShield code and hardened services are installed but intentionally stopped.
+ScamShield code and hardened services are installed. A previously running bot
+was not restarted; on a fresh host the services remain stopped.
 
 Next:
   1. Edit /etc/scamshield/scamshield.env and keep it root:scamshield-runtime 0640.
   2. Confirm /etc/scamshield/channels.txt contains only public or authorized sources.
   3. Retire any old poller using the same Bot API token.
   4. systemctl enable --now scamshield-bot scamshield-feed.timer
-  5. Run /opt/scamshield/current/deploy/hetzner/authorize-monitor.sh once.
+  5. Run /opt/scamshield/current/deploy/hetzner/authorize-monitor.sh once when
+     Telegram authorization is available. Until then the monitor stays disabled.
 
 The Telethon session will then live under /var/lib/scamshield and will not be
 replaced by future GitHub deployments.

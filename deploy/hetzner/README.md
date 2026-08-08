@@ -59,7 +59,9 @@ sudo bash deploy/hetzner/install.sh \
 
 The installer creates an unprivileged `scamshield` user, immutable release
 directories, root-owned configuration, persistent state, systemd units, and a
-forced-command SSH entry. It deliberately leaves the services stopped.
+forced-command SSH entry. It does not start services on a fresh host or restart
+an existing bot during bootstrap. The monitor remains disabled until the
+one-time authorization helper succeeds.
 
 On the existing Liquidity Lab fleet box, the installer also recognizes the
 legacy `/etc/scamshield.env`, `/opt/scamshield/channels.txt`, active unit, and
