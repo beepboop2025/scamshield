@@ -16,7 +16,8 @@ systemctl stop scamshield-monitor.service 2>/dev/null || true
 set -a
 # Root owns this file. The one-time helper loads it without granting the
 # shared Riptide database group access to Telegram credentials.
-# shellcheck disable=SC1091 -- server-owned runtime configuration.
+# The path exists only on the server.
+# shellcheck disable=SC1091
 source /etc/scamshield/scamshield.env
 set +a
 umask 077
