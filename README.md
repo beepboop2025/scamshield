@@ -96,6 +96,8 @@ Useful optional settings:
 |---|---:|---|
 | `SCAMSHIELD_GUARDIAN` | `0` | Enable administrator-authorized group mode |
 | `SCAMSHIELD_DB` | `scamshield.db` | Shared SQLite assessment/IOC/coverage store |
+| `SCAMSHIELD_SESSION` | `scamshield_monitor` in the repository | Persistent Telethon session base path |
+| `SCAMSHIELD_CHANNELS_FILE` | `channels.txt` in the repository | Public/authorized source registry |
 | `SCAMSHIELD_STORE_RAW_SAMPLES` | `0` | Opt in to storing 300-character raw IOC samples |
 | `SCAMSHIELD_PALIMPSEST_ROOT` | unset | Enable canonical pack + capsule bridge |
 | `SCAMSHIELD_PALIMPSEST_OUTBOX` | `var/scamshield-inbox` | Relative Palimpsest runtime outbox |
@@ -129,3 +131,12 @@ python3 -m unittest discover tests -v
 
 The Palimpsest adapter has an independent pytest suite in the Palimpsest
 repository. Run both before deployment or changing the intelligence pack.
+
+## Always-on Hetzner deployment
+
+The production bundle in [`deploy/hetzner`](deploy/hetzner/README.md) keeps
+secrets and mutable state outside immutable releases, runs the bot and
+configured-channel monitor as hardened systemd services, produces a private
+Palimpsest review queue, and can automatically deploy every green `master`
+commit through a forced-command GitHub Actions key. The Telethon session is
+authorized once and persists across code deployments.

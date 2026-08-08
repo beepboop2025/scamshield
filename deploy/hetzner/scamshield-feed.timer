@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh ScamShield Palimpsest review queue every five minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+Persistent=true
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

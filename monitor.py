@@ -29,16 +29,17 @@ from telethon import TelegramClient, events
 from scamshield.analysis import AnalysisService, ObservationContext
 from scamshield.envload import load_env
 from scamshield.iocstore import IocStore
+from scamshield.runtime import channels_file_path, session_base_path
 
 load_env()
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("scamshield.monitor")
 
-SESSION = "scamshield_monitor"
+SESSION = session_base_path()
 STORE = IocStore(os.environ.get("SCAMSHIELD_DB", "scamshield.db"))
 ANALYZER = AnalysisService.from_environment()
 STORE_RAW_SAMPLES = os.environ.get("SCAMSHIELD_STORE_RAW_SAMPLES", "0") == "1"
-CHANNELS_FILE = Path(__file__).with_name("channels.txt")
+CHANNELS_FILE = channels_file_path()
 
 
 def read_channels() -> list[str]:
@@ -76,7 +77,7 @@ async def main() -> None:
     except KeyError as e:
         raise SystemExit(f"Missing {e}. Run login.py setup first.")
 
-    client = TelegramClient(SESSION, api_id, api_hash)
+    client = TelegramClient(str(SESSION), api_id, api_hash)
     await client.start()  # uses saved session; exits if not logged in
 
     if not await client.is_user_authorized():

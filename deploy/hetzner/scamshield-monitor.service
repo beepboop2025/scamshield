@@ -1,0 +1,54 @@
+[Unit]
+Description=ScamShield configured-channel Telethon monitor
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/var/lib/scamshield/telegram/scamshield_monitor.session
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=scamshield
+Group=scamshield
+WorkingDirectory=/opt/scamshield/current
+EnvironmentFile=/etc/scamshield/scamshield.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+UMask=0077
+ExecStartPre=/opt/scamshield/current/deploy/hetzner/preflight.sh monitor
+ExecStart=/opt/scamshield/current/.venv/bin/python /opt/scamshield/current/monitor.py
+Restart=always
+RestartSec=15
+TimeoutStopSec=30
+
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RemoveIPC=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+ReadOnlyPaths=/opt/scamshield /opt/palimpsest /etc/scamshield
+ReadWritePaths=/var/lib/scamshield
+BindPaths=/var/lib/scamshield/palimpsest-inbox:/opt/palimpsest/current/var/scamshield-inbox
+MemoryMax=768M
+TasksMax=128
+LimitNOFILE=1024
+
+[Install]
+WantedBy=multi-user.target

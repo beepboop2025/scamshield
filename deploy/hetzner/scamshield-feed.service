@@ -1,0 +1,42 @@
+[Unit]
+Description=Build ScamShield privacy-minimized Palimpsest review queue
+After=scamshield-bot.service scamshield-monitor.service
+
+[Service]
+Type=oneshot
+User=scamshield
+Group=scamshield
+WorkingDirectory=/opt/scamshield/current
+UMask=0077
+ExecStart=/opt/scamshield/current/deploy/hetzner/render_review_feed.sh
+PrivateNetwork=true
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RemoveIPC=true
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+ReadOnlyPaths=/opt/scamshield /opt/palimpsest /var/lib/scamshield/palimpsest-inbox
+ReadWritePaths=/var/lib/scamshield/review
+BindReadOnlyPaths=/var/lib/scamshield/palimpsest-inbox:/opt/palimpsest/current/var/scamshield-inbox
+MemoryMax=512M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

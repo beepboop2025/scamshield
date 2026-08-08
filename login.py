@@ -20,14 +20,16 @@ from __future__ import annotations
 
 import asyncio
 import os
+from pathlib import Path
 
 from telethon import TelegramClient
 
 from scamshield.envload import load_env
+from scamshield.runtime import session_base_path, session_file_path
 
 load_env()
 
-SESSION = "scamshield_monitor"
+SESSION = session_base_path()
 
 
 async def main() -> None:
@@ -42,13 +44,16 @@ async def main() -> None:
             "number)."
         )
 
-    client = TelegramClient(SESSION, api_id, api_hash)
+    Path(SESSION).parent.mkdir(parents=True, exist_ok=True)
+    client = TelegramClient(str(SESSION), api_id, api_hash)
     # start() prompts on stdin for the SMS code (and 2FA password if set).
     await client.start(phone=phone)
     me = await client.get_me()
     print(f"\n✓ Logged in as @{me.username or me.first_name} (id {me.id}).")
-    print(f"✓ Session saved to {SESSION}.session — monitor.py can now run headless.")
     await client.disconnect()
+    session_file = session_file_path()
+    session_file.chmod(0o600)
+    print(f"✓ Session saved to {session_file} — monitor.py can now run headless.")
 
 
 if __name__ == "__main__":

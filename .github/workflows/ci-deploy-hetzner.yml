@@ -1,0 +1,123 @@
+name: ci-and-deploy-hetzner
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Deploy this commit after tests pass
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scamshield-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install test dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt pytest
+      - name: ScamShield unit suite
+        run: python -m unittest discover -s tests -v
+      - name: Compile runtime entry points
+        run: python -m compileall -q scamshield bot.py monitor.py login.py
+      - name: Validate deployment scripts and systemd units
+        shell: bash
+        run: |
+          set -euo pipefail
+          shellcheck deploy/hetzner/*.sh
+          for script in deploy/hetzner/*.sh; do bash -n "$script"; done
+          sudo useradd --system --home-dir /var/lib/scamshield \
+            --shell /usr/sbin/nologin scamshield 2>/dev/null || true
+          sudo install -d \
+            /opt/scamshield/current/.venv/bin \
+            /opt/scamshield/current/deploy/hetzner \
+            /opt/palimpsest/current/var/scamshield-inbox \
+            /var/lib/scamshield/palimpsest-inbox \
+            /var/lib/scamshield/review \
+            /etc/scamshield
+          sudo ln -sf /usr/bin/python3 /opt/scamshield/current/.venv/bin/python
+          sudo install -m 0755 deploy/hetzner/preflight.sh \
+            deploy/hetzner/render_review_feed.sh \
+            /opt/scamshield/current/deploy/hetzner/
+          sudo touch /opt/scamshield/current/bot.py \
+            /opt/scamshield/current/monitor.py \
+            /etc/scamshield/scamshield.env
+          systemd-analyze verify \
+            "$GITHUB_WORKSPACE"/deploy/hetzner/*.service \
+            "$GITHUB_WORKSPACE"/deploy/hetzner/*.timer
+      - name: Test the pinned Palimpsest adapter
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision="$(tr -d '[:space:]' < deploy/hetzner/palimpsest.rev)"
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          git clone --filter=blob:none --no-checkout \
+            https://github.com/beepboop2025/palimpsest.git /tmp/palimpsest
+          git -C /tmp/palimpsest fetch --depth 1 origin "$revision"
+          git -C /tmp/palimpsest checkout --detach FETCH_HEAD
+          python -m pytest -q \
+            /tmp/palimpsest/tests/test_scamshield_adapter.py \
+            /tmp/palimpsest/tests/test_evidence_capsule_adapter_hardening.py
+
+  deploy:
+    needs: test
+    if: >-
+      (github.event_name == 'push' && vars.HETZNER_DEPLOY_ENABLED == 'true') ||
+      (github.event_name == 'workflow_dispatch' && inputs.deploy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    steps:
+      - name: Validate deployment credentials
+        env:
+          HOST: ${{ secrets.SCAMSHIELD_HETZNER_HOST }}
+          KEY: ${{ secrets.SCAMSHIELD_HETZNER_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.SCAMSHIELD_HETZNER_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ -n "$HOST" && -n "$KEY" && -n "$KNOWN_HOSTS" ]] || {
+            echo "::error::ScamShield Hetzner deployment secrets are incomplete."
+            exit 1
+          }
+      - name: Request test-gated atomic deployment
+        env:
+          HOST: ${{ secrets.SCAMSHIELD_HETZNER_HOST }}
+          KEY: ${{ secrets.SCAMSHIELD_HETZNER_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.SCAMSHIELD_HETZNER_KNOWN_HOSTS }}
+          TARGET: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          install -d -m 0700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/scamshield_deploy
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 0600 ~/.ssh/scamshield_deploy ~/.ssh/known_hosts
+          ssh-keygen -F "$HOST" -f ~/.ssh/known_hosts >/dev/null || {
+            echo "::error::Pinned known_hosts data does not contain the configured host."
+            exit 1
+          }
+          ssh -i ~/.ssh/scamshield_deploy \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=20 \
+            "root@$HOST" "deploy $TARGET"
+          echo "### ScamShield deployed" >> "$GITHUB_STEP_SUMMARY"
+          echo "- commit: \`$TARGET\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- runtime: persistent Hetzner systemd services" >> "$GITHUB_STEP_SUMMARY"
