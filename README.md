@@ -1,57 +1,131 @@
 # ScamShield
 
-Telegram bot + detection engine for USDT-INR money-mule recruitment ads,
-counterfeit-currency ads, and gambling-insider spam.
+ScamShield is a Telegram risk-intelligence system for suspicious payments,
+scams, and illicit-market activity. It combines a hardened money-flow detector,
+conjunctive threat-family rules, a live USDT/INR reference oracle, and
+evidence-bounded provenance hypotheses published by Palimpsest.
 
-**What it is not:** a Telegram-wide scanner. Bots only see chats they're in.
-ScamShield protects at three points instead:
+It currently recognizes tested patterns for:
 
-1. **Shield mode** — anyone forwards a suspicious message to the bot in
-   private chat → instant verdict + scam-mechanics explanation + official
-   reporting channels (1930 / cybercrime.gov.in).
-2. **Guardian mode (OFF by default, not shipped on)** — would score every
-   message in a group it is admin of and act per `POLICY` in `bot.py`
-   (flag / delete / ban per tier). The code is complete but the handler is
-   only registered when `SCAMSHIELD_GUARDIAN=1`, and it needs two
-   @BotFather settings that are currently off: "Allow Groups?" ENABLED and
-   "Group Privacy" DISABLED. Turning on group joins *without* also turning
-   off privacy mode gives you a bot that joins, receives almost nothing,
-   and therefore reports nothing, which is indistinguishable from a clean
-   group. Do not tell anyone a group is protected until `getMe` shows both
-   `can_join_groups` and `can_read_all_group_messages` true.
-3. **IOC pipeline** — every flagged message's handles, phones, channels and
-   USDT wallets land in SQLite (`/digest` to dump). Wallets are the high-value
-   indicator: Tether freezes addresses on law-enforcement request.
+- USDT/INR laundering premiums, money-mule recruitment, account rental, and
+  crypto-to-local-rail cash-out;
+- task, advance-fee, guaranteed-return, impersonation/phishing, and
+  stolen-access scams;
+- possible narcotics, illegal-wildlife, illicit-weapons, forged-document, and
+  counterfeit-currency offers;
+- illegal gambling promotions and scam-compound forced-labour recruitment
+  risks;
+- China-linked underground banking / *feiqian*, Golden Triangle scam-casino
+  infrastructure, cartel-linked laundering typologies, and wildlife proceeds
+  as carefully limited provenance hypotheses.
+
+## What coverage means
+
+ScamShield does **not** see all of Telegram. A bot sees submitted private
+messages and, when correctly configured, messages in groups where it is
+present. The Telethon monitor sees only public or operator-authorized sources
+listed in `channels.txt`. An empty list watches nothing.
+
+Coverage is measured through `/coverage`: observed messages, flagged messages,
+collection errors, surface type, and an optional HMAC-pseudonymized source.
+This is the basis for expanding toward broad Telegram coverage without claiming
+visibility the platform has not granted.
+
+## Two Telegram modes
+
+1. **Shield mode** is always on. A user forwards a suspicious message in a
+   private bot chat and receives a composite verdict, evidence limits, possible
+   typology, and reporting steps.
+2. **Guardian mode** is off by default. When enabled, the bot scores messages
+   in administrator-authorized groups and applies `POLICY` from `bot.py`.
+   Enabling it requires both BotFather settings—group joins enabled and Group
+   Privacy disabled—plus `SCAMSHIELD_GUARDIAN=1`.
+
+The separate `monitor.py` process uses a dedicated Telethon account for
+configured public/authorized channels. Never use a personal Telegram account
+for hostile-source monitoring.
+
+## ScamShield ↔ Palimpsest data flow
+
+Palimpsest owns the canonical inert typology pack. ScamShield consumes the pack
+and sends suspicious structured assessments back through a local one-shot
+bridge. Raw Telegram text is hashed and is not included by default.
+
+Palimpsest verifies an Evidence Capsule and stores it under its ignored runtime
+outbox. Its outbound feed exposes aggregates and IOC counts, not exact handles,
+phones, wallets, URLs, or matched fragments; message-only attribution is
+withheld by default.
+
+```bash
+export SCAMSHIELD_PALIMPSEST_ROOT=/Users/mrinal/palimpsest-site
+export SCAMSHIELD_PSEUDONYM_KEY='replace with a long installation-local secret'
+export SCAMSHIELD_SHARE_MIN_TIER=WATCH
+```
+
+See [`docs/ARCHITECTURE_V3.md`](docs/ARCHITECTURE_V3.md) and Palimpsest's
+`integrations/scamshield/README.md` for the contracts and trust boundaries.
+
+## Rate intelligence
+
+`MarketRateOracle` queries Coinbase and CoinGecko concurrently and caches the
+result. It reports whether the quote is corroborated, divergent, single-source,
+stale, or fallback. When live sources fail completely, the static fallback is
+shown as context but numeric rate detection is disabled. This prevents a stale
+number from becoming evidence.
 
 ## Run
 
 ```bash
-pip install -r requirements.txt
+python3 -m pip install -r requirements.txt
 export SCAMSHIELD_TOKEN=...       # from @BotFather
-export SCAMSHIELD_OWNER_ID=...    # your numeric Telegram id
-python bot.py
+export SCAMSHIELD_OWNER_ID=...    # numeric Telegram user ID
+python3 bot.py
 ```
 
-## Test (offline, stdlib only — run before any deploy)
+For the configured-channel monitor:
+
+```bash
+# TELETHON_API_ID and TELETHON_API_HASH must already be configured.
+python3 login.py
+python3 monitor.py
+```
+
+Useful optional settings:
+
+| Variable | Default | Purpose |
+|---|---:|---|
+| `SCAMSHIELD_GUARDIAN` | `0` | Enable administrator-authorized group mode |
+| `SCAMSHIELD_DB` | `scamshield.db` | Shared SQLite assessment/IOC/coverage store |
+| `SCAMSHIELD_STORE_RAW_SAMPLES` | `0` | Opt in to storing 300-character raw IOC samples |
+| `SCAMSHIELD_PALIMPSEST_ROOT` | unset | Enable canonical pack + capsule bridge |
+| `SCAMSHIELD_PALIMPSEST_OUTBOX` | `var/scamshield-inbox` | Relative Palimpsest runtime outbox |
+| `SCAMSHIELD_SHARE_MIN_TIER` | `WATCH` | Minimum tier exported to Palimpsest |
+| `SCAMSHIELD_PSEUDONYM_KEY` | unset | Stable local HMAC key for source coverage |
+| `COINGECKO_DEMO_API_KEY` | unset | Optional CoinGecko demo key |
+
+## Confidence and attribution
+
+These labels are categorical—not probabilities:
+
+- `TYPOLOGY_MATCH`: message behavior resembles a published typology.
+- `CORROBORATED_LEAD`: at least two independent external source groups and
+  evidence classes support the hypothesis.
+- `DIRECT_LINK`: an authoritative, direct observation names the same IOC kind
+  and exact IOC value that ScamShield extracted from this message. Unbound or
+  unrelated case-record IOCs are rejected.
+
+`feiqian` is a transfer mechanism, the Golden Triangle is an operating
+ecosystem, and narcotics or wildlife trafficking are possible predicate
+offences. They can coexist, but one never proves another. ScamShield must
+abstain when case-specific evidence is absent.
+
+## Test
+
+All ScamShield tests are offline and standard-library-only:
 
 ```bash
 python3 -m unittest discover tests -v
 ```
 
-## Detection signals (weights in `scamshield/detector.py`)
-
-| Signal | Why it fires |
-|---|---|
-| above_market_rate | USDT/INR ≥5% over market — the laundering premium |
-| tiered_fund_menu | hacker/game/stock/hybrid "fund" price sheet |
-| upi_usdt_bridge | UPI/IMPS + USDT co-occurrence (mule-rail recruitment) |
-| prepaid_demand | "work requires USDT prepaid" exit-scam setup |
-| mule_recruitment_language | INR-work template stock phrases |
-| contact_fanout | ≥3 redundant contacts (ban-resilience) |
-| cn_ad_agency_marker | 代发-family paid ad-blasting markers |
-| counterfeit_currency_ad | 假钞/验钞机 fake-note ads |
-| gambling_insider_ad | 六合彩/PC28/内幕 betting-tips ads |
-
-Ecosystem background and the observed corpus: see App-Dev-Ledger entry.
-Never operate this through a personal account; monitoring of hostile
-channels belongs on ANAKE's dedicated accounts.
+The Palimpsest adapter has an independent pytest suite in the Palimpsest
+repository. Run both before deployment or changing the intelligence pack.

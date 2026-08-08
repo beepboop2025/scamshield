@@ -228,8 +228,8 @@ class GuardianCopyMatchesBehaviour(unittest.TestCase):
             "Add me to any chat and I will protect it.",
         ]
         must_pass = [
-            "Forward me any suspicious crypto/payment message and I'll tell "
-            "you if it matches known money-mule and scam-ad patterns.",
+            "Forward me any suspicious Telegram message and I'll check it for "
+            "known scam and illicit-market patterns.",
             "I work in this private chat only. I don't monitor groups, so "
             "adding me to one will not protect it.",
         ]
@@ -249,16 +249,18 @@ class GuardianCopyMatchesBehaviour(unittest.TestCase):
         on = _load_bot("1").start_text()
         self.assertEqual(
             off,
-            "Forward me any suspicious crypto/payment message and I'll tell "
-            "you if it matches known money-mule and scam-ad patterns, and how "
-            "to report it. I work in this private chat only. I don't monitor "
-            "groups, so adding me to one will not protect it.")
+            "Forward me any suspicious Telegram message and I'll check it for "
+            "known scam, money-mule, illicit-market, trafficking-risk, "
+            "counterfeit, and phishing patterns, explain the evidence limits, "
+            "and show reporting steps. I work in this private chat only. I "
+            "don't monitor groups, so adding me to one will not protect it.")
         self.assertEqual(
             on,
-            "Forward me any suspicious crypto/payment message and I'll tell "
-            "you if it matches known money-mule and scam-ad patterns, and how "
-            "to report it. You can also add me to a group as admin and I'll "
-            "watch every message there.")
+            "Forward me any suspicious Telegram message and I'll check it for "
+            "known scam, money-mule, illicit-market, trafficking-risk, "
+            "counterfeit, and phishing patterns, explain the evidence limits, "
+            "and show reporting steps. You can also add me to a group as admin "
+            "and I'll watch every message there.")
 
     def test_guardian_implementation_is_preserved_not_deleted(self):
         """Turning the mode off must not have gutted the code path."""

@@ -638,12 +638,21 @@ _CN_TIPS_RE = re.compile(r"内幕|分享|预测|计划|稳赚|回血|上岸|精�
 _CN_AD_AGENCY = re.compile(r"代发|帮伐|专业代|精准代")
 
 # -------------------------------------------------------------------- IOCs
-_HANDLE_RE = re.compile(r"@[A-Za-z]\w{3,31}")
+_HANDLE_RE = re.compile(r"(?<![\w.])@[A-Za-z]\w{3,31}")
 _PHONE_RE = re.compile(r"\+\d[\d\s()\-]{7,17}\d"
                        r"|(?<![\d+])(?:[6-9]\d{4}[\s-]?\d{5}|[6-9]\d{9})(?![\d])")
 _TME_RE = re.compile(r"t\.me/[A-Za-z0-9_+]{4,}")
 # EVM (0x...) and Tron (T...) addresses — USDT's two main rails.
 _WALLET_RE = re.compile(r"\b(?:0x[a-fA-F0-9]{40}|T[1-9A-HJ-NP-Za-km-z]{33})\b")
+_BTC_WALLET_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:bc1[ac-hj-np-z02-9]{25,87}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})"
+    r"(?![A-Za-z0-9])", re.I)
+_EMAIL_RE = re.compile(
+    r"(?<![\w.+-])[A-Za-z0-9][A-Za-z0-9._%+-]{0,63}"
+    r"@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z]{2,24})+(?![\w.-])")
+_URL_RE = re.compile(
+    r"https?://[^\s<>\]\[(){}\"']{4,2048}", re.I)
 
 
 # ------------------------------------------------------- ATTRIBUTION lexicons
@@ -878,11 +887,15 @@ def extract_iocs(text: str) -> dict:
     """Pull actionable indicators out of a message, deduplicated, order kept."""
     def uniq(seq):
         return list(dict.fromkeys(seq))
+
+    urls = [value.rstrip(".,;:!?") for value in _URL_RE.findall(text)]
     return {
         "handles": uniq(_HANDLE_RE.findall(text)),
         "phones": uniq(_PHONE_RE.findall(text)),
         "channels": uniq(_TME_RE.findall(text)),
-        "wallets": uniq(_WALLET_RE.findall(text)),
+        "wallets": uniq(_WALLET_RE.findall(text) + _BTC_WALLET_RE.findall(text)),
+        "emails": uniq(_EMAIL_RE.findall(text)),
+        "urls": uniq(urls),
     }
 
 
@@ -1210,13 +1223,22 @@ def _carrier_is_real(carrier: str, quoted: str) -> bool:
     return bool(_attribution_suppressors(carrier, ''))
 
 
-def classify(text: str, market_rate: float = MARKET_USDT_INR) -> Verdict:
+def classify(text: str, market_rate: float = MARKET_USDT_INR,
+             *, allow_rate: bool = True) -> Verdict:
+    """Classify one message against the hardened offline rule set.
+
+    ``allow_rate`` lets the runtime fail honestly when no fresh market quote is
+    available.  It disables numeric rate extraction while leaving explicit
+    statements such as "above market" and every non-rate family intact.  The
+    default remains ``True`` for backwards compatibility and offline corpus
+    tests that pass a known reference rate.
+    """
     carrier, quoted = split_quotes(text)
     if quoted.strip() and not _carrier_is_real(carrier, quoted):
         carrier, quoted = text, ''
 
-    full_sig = _score_text(text, market_rate)
-    car_sig = _score_text(carrier, market_rate)
+    full_sig = _score_text(text, market_rate, allow_rate=allow_rate)
+    car_sig = _score_text(carrier, market_rate, allow_rate=allow_rate)
     attr = _attribution_suppressors(carrier, quoted)
     veto_full = _domain_vetoes(carrier, full_sig)
     veto_car = _domain_vetoes(carrier, car_sig)

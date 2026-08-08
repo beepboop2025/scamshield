@@ -26,6 +26,7 @@ Owner commands: /digest — dump the IOC table collected so far.
 
 from __future__ import annotations
 
+import asyncio
 import html
 import logging
 import os
@@ -56,8 +57,10 @@ from telegram.constants import ParseMode
 from telegram.ext import (Application, CommandHandler, ContextTypes,
                           MessageHandler, filters)
 
-from scamshield.detector import Verdict, classify
+from scamshield.analysis import AnalysisService, ObservationContext
+from scamshield.detector import Verdict
 from scamshield.iocstore import IocStore
+from scamshield.rendering import render_analysis
 
 logging.basicConfig(level=logging.INFO)
 # httpx logs every request URL at INFO, and a Telegram request URL embeds the
@@ -69,6 +72,8 @@ log = logging.getLogger("scamshield")
 TOKEN = os.environ.get("SCAMSHIELD_TOKEN", "")
 OWNER_ID = int(os.environ.get("SCAMSHIELD_OWNER_ID", "0"))
 STORE = IocStore(os.environ.get("SCAMSHIELD_DB", "scamshield.db"))
+ANALYZER = AnalysisService.from_environment()
+STORE_RAW_SAMPLES = os.environ.get("SCAMSHIELD_STORE_RAW_SAMPLES", "0") == "1"
 
 # ---------------------------------------------------------------------------
 # Guardian mode master switch. Off by default, and deliberately explicit:
@@ -150,9 +155,10 @@ def start_text() -> str:
     drift away from the handler registration in main(): both read the same
     flag, so promising group protection and providing it are one decision.
     """
-    out = ("Forward me any suspicious crypto/payment message and I'll tell "
-           "you if it matches known money-mule and scam-ad patterns, and how "
-           "to report it.")
+    out = ("Forward me any suspicious Telegram message and I'll check it for "
+           "known scam, money-mule, illicit-market, trafficking-risk, "
+           "counterfeit, and phishing patterns, explain the evidence limits, "
+           "and show reporting steps.")
     if GUARDIAN_ENABLED:
         out += (" You can also add me to a group as admin and I'll watch "
                 "every message there.")
@@ -178,14 +184,44 @@ async def cmd_digest(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
                                     parse_mode=ParseMode.HTML)
 
 
+async def cmd_coverage(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id != OWNER_ID:
+        return
+    rows = STORE.coverage_digest()
+    if not rows:
+        await update.message.reply_text("No collection coverage recorded yet.")
+        return
+    body = "\n".join(
+        f"{surface:<26} {(source or 'unlinked')[:12]:<12} "
+        f"seen={messages} flagged={flagged} errors={errors}"
+        for surface, source, messages, flagged, errors, _last_seen in rows[:100]
+    )
+    await update.message.reply_text(
+        f"<pre>{html.escape(body)}</pre>", parse_mode=ParseMode.HTML,
+    )
+
+
+def _record_result(result, text: str) -> None:
+    if result.iocs:
+        STORE.record(result.iocs, sample=text if STORE_RAW_SAMPLES else "")
+    if result.overall_tier == "CLEAN":
+        STORE.record_coverage(result)
+    else:
+        STORE.record_analysis(result)
+
+
 async def on_private(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     text = update.message.text or update.message.caption or ""
     if not text.strip():
         return
-    verdict = classify(text)
-    if verdict.iocs:
-        STORE.record(verdict.iocs, sample=text)
-    await update.message.reply_text(render_verdict(verdict),
+    collection = ObservationContext.create(
+        text, surface="private_submission", authorization="user_submitted",
+    )
+    result = await asyncio.to_thread(
+        ANALYZER.analyze, text, collection=collection,
+    )
+    _record_result(result, text)
+    await update.message.reply_text(render_analysis(result, surface="private_submission"),
                                     parse_mode=ParseMode.HTML)
 
 
@@ -194,15 +230,25 @@ async def on_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (msg.text or msg.caption or "") if msg else ""
     if not text.strip():
         return
-    verdict = classify(text)
-    if verdict.iocs:
-        STORE.record(verdict.iocs, sample=text)
-    action = POLICY.get(verdict.tier, "ignore")
+    collection = ObservationContext.create(
+        text,
+        surface="guardian_group",
+        authorization="administrator_authorized",
+        raw_source=str(msg.chat_id),
+    )
+    result = await asyncio.to_thread(
+        ANALYZER.analyze, text, collection=collection,
+    )
+    _record_result(result, text)
+    action = POLICY.get(result.overall_tier, "ignore")
 
     if action == "ignore":
         return
     if action == "flag":
-        await msg.reply_text(render_verdict(verdict), parse_mode=ParseMode.HTML)
+        await msg.reply_text(
+            render_analysis(result, surface="guardian_group"),
+            parse_mode=ParseMode.HTML,
+        )
         return
     if action in ("delete", "delete_and_ban"):
         try:
@@ -217,8 +263,8 @@ async def on_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if OWNER_ID:
             await context.bot.send_message(
                 OWNER_ID,
-                f"[{msg.chat.title}] {action} on {verdict.tier} "
-                f"(score {verdict.score}) from "
+                f"[{msg.chat.title}] {action} on {result.overall_tier} "
+                f"(score {result.overall_score}) from "
                 f"{msg.from_user.mention_html()}",
                 parse_mode=ParseMode.HTML,
             )
@@ -258,6 +304,7 @@ def main() -> None:
            .post_init(_warn_on_guardian_mismatch).build())
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("digest", cmd_digest))
+    app.add_handler(CommandHandler("coverage", cmd_coverage))
     app.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & ~filters.COMMAND, on_private))
     # Guardian mode: registered only when explicitly switched on. See the
