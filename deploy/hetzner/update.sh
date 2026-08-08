@@ -91,8 +91,12 @@ old_scam="$(readlink -f "$scam_current" 2>/dev/null || true)"
 old_pal="$(readlink -f "$pal_current" 2>/dev/null || true)"
 bot_was_active=0
 monitor_was_active=0
-systemctl is-active --quiet scamshield-bot.service && bot_was_active=1 || true
-systemctl is-active --quiet scamshield-monitor.service && monitor_was_active=1 || true
+if systemctl is-active --quiet scamshield-bot.service; then
+  bot_was_active=1
+fi
+if systemctl is-active --quiet scamshield-monitor.service; then
+  monitor_was_active=1
+fi
 
 atomic_link() {
   local destination="$1" target_path="$2" temporary
@@ -122,8 +126,12 @@ rollback() {
   if [[ -n "$old_scam" ]]; then
     install_runtime_contract "$old_scam"
   fi
-  (( bot_was_active )) && systemctl restart scamshield-bot.service || true
-  (( monitor_was_active )) && systemctl restart scamshield-monitor.service || true
+  if (( bot_was_active )); then
+    systemctl restart scamshield-bot.service || true
+  fi
+  if (( monitor_was_active )); then
+    systemctl restart scamshield-monitor.service || true
+  fi
   exit 1
 }
 
