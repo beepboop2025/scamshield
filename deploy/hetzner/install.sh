@@ -12,20 +12,31 @@ palimpsest_repo="${PALIMPSEST_REPO_URL:-https://github.com/beepboop2025/palimpse
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq git python3 python3-venv ca-certificates util-linux >/dev/null
+apt-get install -y -qq git python3 python3-venv ca-certificates openssl util-linux >/dev/null
 
-id scamshield >/dev/null 2>&1 || \
-  useradd --system --home-dir /var/lib/scamshield --shell /usr/sbin/nologin scamshield
+getent group scamshield >/dev/null 2>&1 || groupadd --system scamshield
+getent group scamshield-runtime >/dev/null 2>&1 || \
+  groupadd --system scamshield-runtime
+if ! getent passwd scamshield >/dev/null 2>&1; then
+  useradd --system --home-dir /var/lib/scamshield --shell /usr/sbin/nologin \
+    --gid scamshield-runtime --groups scamshield scamshield
+else
+  usermod --gid scamshield-runtime --append --groups scamshield scamshield
+fi
 
 install -d -o root -g root -m 0755 \
   /opt/scamshield /opt/scamshield/releases \
   /opt/palimpsest /opt/palimpsest/releases
-install -d -o scamshield -g scamshield -m 0700 \
-  /var/lib/scamshield \
+install -d -o scamshield -g scamshield -m 2770 /var/lib/scamshield
+install -d -o scamshield -g scamshield-runtime -m 0700 \
   /var/lib/scamshield/telegram \
   /var/lib/scamshield/palimpsest-inbox \
   /var/lib/scamshield/review
-install -d -o root -g scamshield -m 0750 /etc/scamshield
+install -d -o root -g scamshield-runtime -m 0750 /etc/scamshield
+if [[ -f /var/lib/scamshield/scamshield.db ]]; then
+  chgrp scamshield /var/lib/scamshield/scamshield.db
+  chmod g+rw /var/lib/scamshield/scamshield.db
+fi
 
 if [[ ! -d /opt/scamshield/source/.git ]]; then
   git clone "$scamshield_repo" /opt/scamshield/source
@@ -40,13 +51,62 @@ git -C /opt/palimpsest/source remote set-url origin "$palimpsest_repo"
 git -C /opt/palimpsest/source fetch --prune origin main
 
 if [[ ! -f /etc/scamshield/scamshield.env ]]; then
-  install -o root -g scamshield -m 0640 \
-    /opt/scamshield/source/deploy/hetzner/scamshield.env.example \
-    /etc/scamshield/scamshield.env
+  example=/opt/scamshield/source/deploy/hetzner/scamshield.env.example
+  legacy=/etc/scamshield.env
+  stage="$(mktemp)"
+  awk '
+    !/^(SCAMSHIELD_TOKEN|SCAMSHIELD_OWNER_ID|SCAMSHIELD_DB|SCAMSHIELD_FORCE_IPV4|SCAMSHIELD_PSEUDONYM_KEY)=/
+  ' "$example" > "$stage"
+  for key in SCAMSHIELD_TOKEN SCAMSHIELD_OWNER_ID SCAMSHIELD_DB SCAMSHIELD_FORCE_IPV4; do
+    value=""
+    if [[ -f "$legacy" ]]; then
+      value="$(awk -F= -v wanted="$key" '$1 == wanted {print substr($0, index($0, "=") + 1); exit}' "$legacy")"
+    fi
+    case "$key" in
+      SCAMSHIELD_DB) value="${value:-/var/lib/scamshield/scamshield.db}" ;;
+      SCAMSHIELD_FORCE_IPV4) value="${value:-1}" ;;
+    esac
+    printf '%s=%s\n' "$key" "$value" >> "$stage"
+  done
+  printf 'SCAMSHIELD_PSEUDONYM_KEY=%s\n' "$(openssl rand -hex 32)" >> "$stage"
+  install -o root -g scamshield-runtime -m 0640 \
+    "$stage" /etc/scamshield/scamshield.env
+  rm -f "$stage"
+
+  if [[ -f "$legacy" || -f /etc/systemd/system/scamshield-bot.service ]]; then
+    backup=/var/lib/scamshield/migration-backups/"$(date -u +%Y%m%dT%H%M%SZ)"
+    install -d -o root -g scamshield-runtime -m 0700 "$backup"
+    if [[ -f "$legacy" ]]; then
+      install -o root -g root -m 0600 \
+        "$legacy" "$backup/scamshield.env"
+    fi
+    if [[ -f /etc/systemd/system/scamshield-bot.service ]]; then
+      install -o root -g root -m 0600 \
+        /etc/systemd/system/scamshield-bot.service \
+        "$backup/scamshield-bot.service"
+    fi
+    if [[ -f /var/lib/scamshield/scamshield.db ]]; then
+      python3 - /var/lib/scamshield/scamshield.db "$backup/scamshield.db" <<'PY'
+import sqlite3
+import sys
+
+source = sqlite3.connect(sys.argv[1])
+target = sqlite3.connect(sys.argv[2])
+with target:
+    source.backup(target)
+target.close()
+source.close()
+PY
+      chmod 0600 "$backup/scamshield.db"
+    fi
+  fi
 fi
 if [[ ! -f /etc/scamshield/channels.txt ]]; then
-  install -o root -g scamshield -m 0640 \
-    /opt/scamshield/source/channels.txt /etc/scamshield/channels.txt
+  channels_source=/opt/scamshield/source/channels.txt
+  [[ -f /opt/scamshield/channels.txt ]] && \
+    channels_source=/opt/scamshield/channels.txt
+  install -o root -g scamshield-runtime -m 0640 \
+    "$channels_source" /etc/scamshield/channels.txt
 fi
 
 target="$(git -C /opt/scamshield/source rev-parse origin/master)"
@@ -76,7 +136,7 @@ cat <<'EOF'
 ScamShield code and hardened services are installed but intentionally stopped.
 
 Next:
-  1. Edit /etc/scamshield/scamshield.env and keep it root:scamshield 0640.
+  1. Edit /etc/scamshield/scamshield.env and keep it root:scamshield-runtime 0640.
   2. Confirm /etc/scamshield/channels.txt contains only public or authorized sources.
   3. Retire any old poller using the same Bot API token.
   4. systemctl enable --now scamshield-bot scamshield-feed.timer

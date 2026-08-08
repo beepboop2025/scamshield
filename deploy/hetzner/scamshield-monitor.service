@@ -9,12 +9,14 @@ StartLimitBurst=5
 [Service]
 Type=simple
 User=scamshield
-Group=scamshield
+Group=scamshield-runtime
+SupplementaryGroups=scamshield
 WorkingDirectory=/opt/scamshield/current
 EnvironmentFile=/etc/scamshield/scamshield.env
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
-UMask=0077
+# Preserve group write access on the shared SQLite WAL for Riptide.
+UMask=0007
 ExecStartPre=/opt/scamshield/current/deploy/hetzner/preflight.sh monitor
 ExecStart=/opt/scamshield/current/.venv/bin/python /opt/scamshield/current/monitor.py
 Restart=always

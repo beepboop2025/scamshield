@@ -8,12 +8,15 @@ StartLimitBurst=5
 [Service]
 Type=simple
 User=scamshield
-Group=scamshield
+Group=scamshield-runtime
+SupplementaryGroups=scamshield
 WorkingDirectory=/opt/scamshield/current
 EnvironmentFile=/etc/scamshield/scamshield.env
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
-UMask=0077
+# The SQLite store is deliberately shared with Riptide through the setgid
+# `scamshield` state directory. Secret/session subdirectories remain 0700.
+UMask=0007
 ExecStartPre=/opt/scamshield/current/deploy/hetzner/preflight.sh bot
 ExecStart=/opt/scamshield/current/.venv/bin/python /opt/scamshield/current/bot.py
 Restart=always

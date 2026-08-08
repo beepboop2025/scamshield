@@ -13,21 +13,22 @@ env_file=/etc/scamshield/scamshield.env
 }
 
 systemctl stop scamshield-monitor.service 2>/dev/null || true
-runuser -u scamshield -- /usr/bin/bash -c '
-  set -a
-  source /etc/scamshield/scamshield.env
-  set +a
-  umask 077
-  cd /var/lib/scamshield
-  exec /opt/scamshield/current/.venv/bin/python /opt/scamshield/current/login.py
-'
+set -a
+# Root owns this file. The one-time helper loads it without granting the
+# shared Riptide database group access to Telegram credentials.
+# shellcheck disable=SC1091 -- server-owned runtime configuration.
+source /etc/scamshield/scamshield.env
+set +a
+umask 077
+cd /var/lib/scamshield
+/opt/scamshield/current/.venv/bin/python /opt/scamshield/current/login.py
 
 session=/var/lib/scamshield/telegram/scamshield_monitor.session
 [[ -s "$session" ]] || {
   echo "Authorization did not create $session" >&2
   exit 1
 }
-chown scamshield:scamshield "$session"
+chown scamshield:scamshield-runtime "$session"
 chmod 0600 "$session"
 systemctl enable --now scamshield-monitor.service
 sleep 3

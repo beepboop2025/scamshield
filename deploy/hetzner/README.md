@@ -61,14 +61,23 @@ The installer creates an unprivileged `scamshield` user, immutable release
 directories, root-owned configuration, persistent state, systemd units, and a
 forced-command SSH entry. It deliberately leaves the services stopped.
 
+On the existing Liquidity Lab fleet box, the installer also recognizes the
+legacy `/etc/scamshield.env`, `/opt/scamshield/channels.txt`, active unit, and
+shared database. It migrates the configuration without printing secrets,
+creates a consistent SQLite backup under
+`/var/lib/scamshield/migration-backups/`, and preserves Riptide's database
+access through the existing `scamshield` group. The separate
+`scamshield-runtime` group protects Telegram credentials and source config
+from other fleet services.
+
 ## Server secrets and activation
 
 Edit `/etc/scamshield/scamshield.env`, then keep it protected:
 
 ```bash
-sudo chown root:scamshield /etc/scamshield/scamshield.env
+sudo chown root:scamshield-runtime /etc/scamshield/scamshield.env
 sudo chmod 0640 /etc/scamshield/scamshield.env
-sudo chown root:scamshield /etc/scamshield/channels.txt
+sudo chown root:scamshield-runtime /etc/scamshield/channels.txt
 sudo chmod 0640 /etc/scamshield/channels.txt
 ```
 

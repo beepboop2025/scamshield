@@ -42,8 +42,11 @@ jobs:
           set -euo pipefail
           shellcheck deploy/hetzner/*.sh
           for script in deploy/hetzner/*.sh; do bash -n "$script"; done
+          sudo groupadd --system scamshield 2>/dev/null || true
+          sudo groupadd --system scamshield-runtime 2>/dev/null || true
           sudo useradd --system --home-dir /var/lib/scamshield \
-            --shell /usr/sbin/nologin scamshield 2>/dev/null || true
+            --shell /usr/sbin/nologin --gid scamshield-runtime \
+            --groups scamshield scamshield 2>/dev/null || true
           sudo install -d \
             /opt/scamshield/current/.venv/bin \
             /opt/scamshield/current/deploy/hetzner \
