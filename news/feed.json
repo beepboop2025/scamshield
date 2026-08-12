@@ -6,6 +6,19 @@
   "description": "Human-curated releases from ScamShield. This feed never contains private review-queue records, submitted messages, or exact IOC values.",
   "items": [
     {
+      "id": "scamshield.release.public-safety-guide.v1",
+      "url": "https://palimpsest.info/guides/telegram-scam-message-checker/",
+      "title": "ScamShield publishes a public message-checking and interpretation guide",
+      "summary": "The public guide gives ScamShield by Palimpsest a stable, crawlable identity outside Telegram. It explains how to submit a suspicious message, what supported pattern matches do and do not prove, the privacy boundary, and the official Indian cyber-fraud reporting route. The bot now links back to the same guide.",
+      "date_published": "2026-08-13T00:00:00Z",
+      "date_modified": "2026-08-13T00:00:00Z",
+      "tags": ["release", "safety", "Telegram", "reporting", "discovery"],
+      "_scamshield": {
+        "status": "reviewed product update",
+        "disclosure": "No submitted message, exact IOC value, or private review-queue record is included."
+      }
+    },
+    {
       "id": "scamshield.release.privacy-safe-developer-surfaces.v1",
       "url": "https://github.com/beepboop2025/scamshield/blob/master/docs/API-MCP.md",
       "title": "ScamShield adds privacy-safe REST and MCP assessment surfaces",

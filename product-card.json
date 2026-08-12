@@ -2,13 +2,14 @@
   "schema_version": "evidence-product-card/v1",
   "name": "ScamShield",
   "tagline": "Forward the message. See the mechanics. Know what to do next.",
-  "summary": "Evidence-bounded suspicious-message triage for Telegram users, developers, and research workflows.",
+  "summary": "ScamShield by Palimpsest provides evidence-bounded suspicious-message triage for Telegram users, developers, and research workflows.",
   "primary_action": {
     "label": "Check a message on Telegram",
     "url": "https://t.me/Scamshield_2_bot"
   },
   "surfaces": {
     "telegram": "https://t.me/Scamshield_2_bot",
+    "public_guide": "https://palimpsest.info/guides/telegram-scam-message-checker/",
     "rest": "local-only; see openapi.json",
     "mcp": "stdio; run python3 mcp/scamshield_mcp.py",
     "intelligence_pack": "scamshield/data/intelligence-pack-v1.json"
@@ -19,6 +20,7 @@
     "api_exact_ioc_disclosure": false,
     "human_review_required": true
   },
+  "disambiguation": "ScamShield by Palimpsest is the open-source Telegram message-triage system at @Scamshield_2_bot; it is not affiliated with other services named ScamShield.",
   "related_products": [
     {"name": "Palimpsest", "url": "https://palimpsest.info"},
     {"name": "NarcoScope", "url": "https://narcoscope.com"}

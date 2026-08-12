@@ -116,7 +116,8 @@ def _load_bot(guardian_env):
     _install_telegram_stub()
     db = Path(tempfile.mkdtemp()) / "test_ioc.db"
     old = {k: os.environ.get(k) for k in
-           ("SCAMSHIELD_GUARDIAN", "SCAMSHIELD_TOKEN", "SCAMSHIELD_DB")}
+           ("SCAMSHIELD_GUARDIAN", "SCAMSHIELD_TOKEN", "SCAMSHIELD_DB",
+            "SCAMSHIELD_GUIDE_URL")}
     os.environ["SCAMSHIELD_TOKEN"] = "test:token"
     os.environ["SCAMSHIELD_DB"] = str(db)
     if guardian_env is None:
@@ -283,6 +284,20 @@ class GuardianCopyMatchesBehaviour(unittest.TestCase):
         callbacks = _registered_callbacks(mod)
         self.assertIn(mod.cmd_liquidity, callbacks)
         self.assertIn(mod.cmd_review_amount, callbacks)
+
+    def test_public_guide_is_present_in_the_bot_keyboard(self):
+        mod = _load_bot(None)
+        self.assertEqual(
+            mod.SCAMSHIELD_GUIDE_URL,
+            "https://palimpsest.info/guides/telegram-scam-message-checker/",
+        )
+        markup = mod.product_keyboard()
+        rows = getattr(markup, "inline_keyboard", markup)
+        buttons = [button for row in rows for button in row]
+        labels = [button.text if hasattr(button, "text") else button[0] for button in buttons]
+        urls = [button.url if hasattr(button, "url") else button[1].get("url") for button in buttons]
+        self.assertIn("Public safety guide", labels)
+        self.assertIn(mod.SCAMSHIELD_GUIDE_URL, urls)
 
     def test_public_discovery_commands_are_registered(self):
         mod = _load_bot(None)

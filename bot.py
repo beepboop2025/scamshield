@@ -92,6 +92,10 @@ PALIMPSEST_URL = os.environ.get("PALIMPSEST_URL", "https://palimpsest.info")
 NARCOSCOPE_URL = os.environ.get(
     "NARCOSCOPE_URL", "https://narcoscope.com"
 )
+SCAMSHIELD_GUIDE_URL = os.environ.get(
+    "SCAMSHIELD_GUIDE_URL",
+    "https://palimpsest.info/guides/telegram-scam-message-checker/",
+)
 EVIDENCE_CHANNEL_URL = os.environ.get("EVIDENCE_CHANNEL_URL", "").strip()
 
 PUBLIC_COMMANDS = (
@@ -211,6 +215,9 @@ def product_keyboard() -> InlineKeyboardMarkup:
     rows = []
     if EVIDENCE_CHANNEL_URL:
         rows.append([InlineKeyboardButton("Follow Evidence Signal", url=EVIDENCE_CHANNEL_URL)])
+    rows.append([
+        InlineKeyboardButton("Public safety guide", url=SCAMSHIELD_GUIDE_URL),
+    ])
     rows.append([
         InlineKeyboardButton("Palimpsest", url=PALIMPSEST_URL),
         InlineKeyboardButton("NarcoScope", url=NARCOSCOPE_URL),
