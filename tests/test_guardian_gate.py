@@ -96,6 +96,9 @@ def _install_telegram_stub():
 
     tg = types.ModuleType("telegram")
     tg.Update = object
+    tg.BotCommand = lambda command, description: (command, description)
+    tg.InlineKeyboardButton = lambda text, **kwargs: (text, kwargs)
+    tg.InlineKeyboardMarkup = lambda rows: rows
     tg.ext = ext
     constants = types.ModuleType("telegram.constants")
     constants.ParseMode = types.SimpleNamespace(HTML="HTML")
@@ -249,18 +252,25 @@ class GuardianCopyMatchesBehaviour(unittest.TestCase):
         on = _load_bot("1").start_text()
         self.assertEqual(
             off,
-            "Forward me any suspicious Telegram message and I'll check it for "
-            "known scam, money-mule, illicit-market, trafficking-risk, "
-            "counterfeit, and phishing patterns, explain the evidence limits, "
-            "and show reporting steps. I work in this private chat only. I "
-            "don't monitor groups, so adding me to one will not protect it.")
+            "<b>Turn a suspicious message into an evidence-bounded risk readout.</b>\n\n"
+            "Forward or paste the message here. ScamShield checks for money-mule, "
+            "phishing, impersonation, advance-fee, counterfeit, illicit-market, and "
+            "trafficking-risk patterns. You get the matched mechanics, evidence "
+            "limits, and practical reporting steps — usually in one reply.\n\n"
+            "No supported pattern is a guarantee of safety.\n\n"
+            "<b>Private-chat Shield mode is on.</b> I don't monitor groups, so adding "
+            "me to one will not protect it.\n\n<b>Try it now:</b> forward the message "
+            "you are unsure about.")
         self.assertEqual(
             on,
-            "Forward me any suspicious Telegram message and I'll check it for "
-            "known scam, money-mule, illicit-market, trafficking-risk, "
-            "counterfeit, and phishing patterns, explain the evidence limits, "
-            "and show reporting steps. You can also add me to a group as admin "
-            "and I'll watch every message there.")
+            "<b>Turn a suspicious message into an evidence-bounded risk readout.</b>\n\n"
+            "Forward or paste the message here. ScamShield checks for money-mule, "
+            "phishing, impersonation, advance-fee, counterfeit, illicit-market, and "
+            "trafficking-risk patterns. You get the matched mechanics, evidence "
+            "limits, and practical reporting steps — usually in one reply.\n\n"
+            "No supported pattern is a guarantee of safety.\n\nYou can also add me "
+            "to a group as admin and I'll watch every message there.\n\n"
+            "<b>Try it now:</b> forward the message you are unsure about.")
 
     def test_guardian_implementation_is_preserved_not_deleted(self):
         """Turning the mode off must not have gutted the code path."""
@@ -273,6 +283,18 @@ class GuardianCopyMatchesBehaviour(unittest.TestCase):
         callbacks = _registered_callbacks(mod)
         self.assertIn(mod.cmd_liquidity, callbacks)
         self.assertIn(mod.cmd_review_amount, callbacks)
+
+    def test_public_discovery_commands_are_registered(self):
+        mod = _load_bot(None)
+        callbacks = _registered_callbacks(mod)
+        for callback in (
+            mod.cmd_how,
+            mod.cmd_typologies,
+            mod.cmd_privacy,
+            mod.cmd_explore,
+            mod.cmd_help,
+        ):
+            self.assertIn(callback, callbacks)
 
     def test_docstring_and_switch_document_both_botfather_toggles(self):
         """A future reader must be able to find how to turn this on."""

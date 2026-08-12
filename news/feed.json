@@ -1,0 +1,22 @@
+{
+  "version": "https://jsonfeed.org/version/1.1",
+  "title": "ScamShield product and evidence updates",
+  "home_page_url": "https://github.com/beepboop2025/scamshield",
+  "feed_url": "https://raw.githubusercontent.com/beepboop2025/scamshield/master/news/feed.json",
+  "description": "Human-curated releases from ScamShield. This feed never contains private review-queue records, submitted messages, or exact IOC values.",
+  "items": [
+    {
+      "id": "scamshield.release.privacy-safe-developer-surfaces.v1",
+      "url": "https://github.com/beepboop2025/scamshield/blob/master/docs/API-MCP.md",
+      "title": "ScamShield adds privacy-safe REST and MCP assessment surfaces",
+      "summary": "Developers can now run the same evidence-bounded message triage contract over a loopback REST API or local MCP server. Assessments are processed in memory, never enter the IOC or review stores, never invoke the Palimpsest bridge, and omit submitted text and exact IOC values from responses. The Telegram bot also gains clearer how-it-works, typology, privacy, and product-discovery commands.",
+      "date_published": "2026-08-12T00:00:00Z",
+      "date_modified": "2026-08-12T00:00:00Z",
+      "tags": ["release", "privacy", "MCP", "API", "Telegram"],
+      "_scamshield": {
+        "status": "reviewed product update",
+        "disclosure": "No submitted message, exact IOC value, or private review-queue record is included."
+      }
+    }
+  ]
+}

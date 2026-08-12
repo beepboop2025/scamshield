@@ -77,6 +77,32 @@ The separate `monitor.py` process uses a dedicated Telethon account for
 configured public/authorized channels. Never use a personal Telegram account
 for hostile-source monitoring.
 
+The public bot menu also exposes `/how`, `/typologies`, `/privacy`, `/explore`,
+and `/help`. Startup synchronizes the bot name, descriptions, and command menu
+with the shipped behavior. Set `EVIDENCE_CHANNEL_URL` after the shared
+NarcoScope–Palimpsest–ScamShield news channel exists to add its follow button;
+`PALIMPSEST_URL` and `NARCOSCOPE_URL` can override the related-product links.
+
+## API and MCP
+
+Local integrations can use the same detector through a loopback REST API or a
+stdio MCP server:
+
+```bash
+python3 api/scamshield_api.py
+python3 mcp/scamshield_mcp.py
+```
+
+These developer surfaces are deliberately non-persisting: they do not write
+to the IOC/review stores, never invoke the Palimpsest bridge, and omit both the
+submitted text and exact IOC values from responses. See
+[`docs/API-MCP.md`](docs/API-MCP.md), [`openapi.json`](openapi.json), and
+[`llms.txt`](llms.txt).
+
+Reviewed product and evidence releases are listed in [`news/feed.json`](news/feed.json).
+This is the only ScamShield source eligible for the shared Evidence Signal
+channel; the private human-review queue is never a broadcast input.
+
 ## ScamShield ↔ Palimpsest data flow
 
 Palimpsest owns the canonical inert typology pack. ScamShield consumes the pack
@@ -136,6 +162,11 @@ Useful optional settings:
 | `SCAMSHIELD_SHARE_MIN_TIER` | `WATCH` | Minimum tier exported to Palimpsest |
 | `SCAMSHIELD_PSEUDONYM_KEY` | unset | Stable local HMAC key for source coverage |
 | `COINGECKO_DEMO_API_KEY` | unset | Optional CoinGecko demo key |
+| `EVIDENCE_CHANNEL_URL` | unset | Shared evidence-news channel button shown in the bot |
+| `PALIMPSEST_URL` | `https://palimpsest.info` | Palimpsest discovery link |
+| `NARCOSCOPE_URL` | current Vercel site | NarcoScope discovery link |
+| `SCAMSHIELD_API_HOST` | `127.0.0.1` | Local REST bind address |
+| `SCAMSHIELD_API_PORT` | `8794` | Local REST port |
 
 ## Confidence and attribution
 
