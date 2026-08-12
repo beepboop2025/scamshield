@@ -35,7 +35,9 @@ jobs:
       - name: ScamShield unit suite
         run: python -m unittest discover -s tests -v
       - name: Compile runtime entry points
-        run: python -m compileall -q scamshield bot.py monitor.py login.py
+        run: >-
+          python -m compileall -q scamshield bot.py monitor.py login.py
+          export_monitoring_summary.py manage_sources.py
       - name: Validate deployment scripts and systemd units
         shell: bash
         run: |

@@ -7,7 +7,8 @@ StartLimitIntervalSec=300
 StartLimitBurst=5
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
 User=scamshield
 Group=scamshield-runtime
 SupplementaryGroups=scamshield
@@ -21,7 +22,9 @@ ExecStartPre=/opt/scamshield/current/deploy/hetzner/preflight.sh monitor
 ExecStart=/opt/scamshield/current/.venv/bin/python /opt/scamshield/current/monitor.py
 Restart=always
 RestartSec=15
+TimeoutStartSec=120
 TimeoutStopSec=30
+WatchdogSec=120
 
 NoNewPrivileges=true
 CapabilityBoundingSet=

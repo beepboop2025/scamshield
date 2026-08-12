@@ -1,12 +1,16 @@
 [Unit]
-Description=Build ScamShield privacy-minimized Palimpsest review queue
+Description=Build ScamShield privacy-minimized downstream review artifacts
 After=scamshield-bot.service scamshield-monitor.service
 
 [Service]
 Type=oneshot
 User=scamshield
 Group=scamshield-runtime
+SupplementaryGroups=scamshield
 WorkingDirectory=/opt/scamshield/current
+Environment=SCAMSHIELD_DB=/var/lib/scamshield/scamshield.db
+Environment=SCAMSHIELD_EXPORT_MIN_MESSAGES=20
+Environment=SCAMSHIELD_EXPORT_MIN_SOURCES=2
 UMask=0077
 ExecStart=/opt/scamshield/current/deploy/hetzner/render_review_feed.sh
 PrivateNetwork=true

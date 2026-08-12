@@ -56,7 +56,9 @@ if [[ ! -f "$scam_release/.deploy-ready" ]]; then
     -s "$scam_release/tests" -v
   "$scam_release/.venv/bin/python" -m compileall -q \
     "$scam_release/scamshield" "$scam_release/bot.py" \
-    "$scam_release/monitor.py" "$scam_release/login.py"
+    "$scam_release/monitor.py" "$scam_release/login.py" \
+    "$scam_release/export_monitoring_summary.py" \
+    "$scam_release/manage_sources.py"
   touch "$scam_release/.deploy-ready"
 fi
 
