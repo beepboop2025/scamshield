@@ -128,8 +128,9 @@ sudo /opt/scamshield/current/deploy/hetzner/authorize-monitor.sh
 ```
 
 Enter Telegram’s code and any 2FA password in that SSH terminal. Never put
-either value in GitHub. The helper protects the resulting session and starts
-the monitor.
+either value in GitHub. If `SCAMSHIELD_PHONE` is blank, the helper also asks
+for the dedicated account's E.164 phone number and does not persist it. The
+helper protects the resulting session and starts the monitor.
 
 ## GitHub automatic deployment
 
