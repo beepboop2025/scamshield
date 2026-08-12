@@ -2,6 +2,7 @@
 Description=Promote corroborated Telegram public channels into ScamShield
 After=scamshield-monitor.service
 ConditionPathExists=/var/lib/scamshield/scamshield.db
+ConditionPathExists=/var/lib/scamshield/scamshield.db-shm
 
 [Service]
 Type=oneshot
@@ -33,6 +34,9 @@ RemoveIPC=true
 RestrictAddressFamilies=AF_UNIX
 SystemCallArchitectures=native
 ReadOnlyPaths=/opt/scamshield /var/lib/scamshield
-ReadWritePaths=/etc/scamshield/channels.txt
+ReadWritePaths=/etc/scamshield/channels.txt -/var/lib/scamshield/scamshield.db-shm
+InaccessiblePaths=/etc/scamshield/scamshield.env
+InaccessiblePaths=/var/lib/scamshield/telegram /var/lib/scamshield/review
+InaccessiblePaths=/var/lib/scamshield/palimpsest-inbox /var/lib/scamshield/handoffs
 MemoryMax=256M
 TasksMax=32
