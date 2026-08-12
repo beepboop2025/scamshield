@@ -31,7 +31,7 @@ session=/var/lib/scamshield/telegram/scamshield_monitor.session
 }
 chown scamshield:scamshield-runtime "$session"
 chmod 0600 "$session"
-systemctl enable --now scamshield-monitor.service
+systemctl enable --now scamshield-monitor.service scamshield-source-expansion.timer
 sleep 3
 systemctl is-active --quiet scamshield-monitor.service || {
   journalctl -u scamshield-monitor.service -n 50 --no-pager >&2

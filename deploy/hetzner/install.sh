@@ -17,12 +17,15 @@ apt-get install -y -qq git python3 python3-venv ca-certificates openssl util-lin
 getent group scamshield >/dev/null 2>&1 || groupadd --system scamshield
 getent group scamshield-runtime >/dev/null 2>&1 || \
   groupadd --system scamshield-runtime
+getent group intelligence-review >/dev/null 2>&1 || \
+  groupadd --system intelligence-review
 if ! getent passwd scamshield >/dev/null 2>&1; then
   useradd --system --home-dir /var/lib/scamshield --shell /usr/sbin/nologin \
     --gid scamshield-runtime --groups scamshield scamshield
 else
   usermod --gid scamshield-runtime --append --groups scamshield scamshield
 fi
+usermod --append --groups intelligence-review scamshield
 
 install -d -o root -g root -m 0755 \
   /opt/scamshield /opt/scamshield/releases \
@@ -32,6 +35,8 @@ install -d -o scamshield -g scamshield-runtime -m 0700 \
   /var/lib/scamshield/telegram \
   /var/lib/scamshield/palimpsest-inbox \
   /var/lib/scamshield/review
+install -d -o scamshield -g intelligence-review -m 2750 \
+  /var/lib/scamshield/handoffs/narcoscope
 install -d -o root -g scamshield-runtime -m 0750 /etc/scamshield
 if [[ -f /var/lib/scamshield/scamshield.db ]]; then
   chgrp scamshield /var/lib/scamshield/scamshield.db

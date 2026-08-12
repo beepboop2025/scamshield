@@ -6,7 +6,7 @@ After=scamshield-bot.service scamshield-monitor.service
 Type=oneshot
 User=scamshield
 Group=scamshield-runtime
-SupplementaryGroups=scamshield
+SupplementaryGroups=scamshield intelligence-review
 WorkingDirectory=/opt/scamshield/current
 Environment=SCAMSHIELD_DB=/var/lib/scamshield/scamshield.db
 Environment=SCAMSHIELD_EXPORT_MIN_MESSAGES=20
@@ -37,7 +37,7 @@ RemoveIPC=true
 RestrictAddressFamilies=AF_UNIX
 SystemCallArchitectures=native
 ReadOnlyPaths=/opt/scamshield /opt/palimpsest /var/lib/scamshield/palimpsest-inbox
-ReadWritePaths=/var/lib/scamshield/review
+ReadWritePaths=/var/lib/scamshield/review /var/lib/scamshield/handoffs/narcoscope
 BindReadOnlyPaths=/var/lib/scamshield/palimpsest-inbox:/opt/palimpsest/current/var/scamshield-inbox
 MemoryMax=512M
 TasksMax=64
