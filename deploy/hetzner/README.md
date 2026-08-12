@@ -21,6 +21,7 @@ Hetzner
   scamshield-bot.service      Bot API private submissions / authorized groups
   scamshield-monitor.service  configured public or operator-authorized sources
   scamshield-feed.timer       privacy-minimized, human-review-only artifacts
+  scamshield-source-expansion.timer  bounded verified-public-source promotion
 ```
 
 ## Telegram boundary
@@ -44,8 +45,15 @@ minutes. Live messages never advance the history cursor. The source file is
 also re-read on that cadence, so adding an explicitly authorized source does
 not require a new Telegram login or a code release.
 
-Flagged posts can nominate public usernames for review, but the collector never
-resolves or joins those nominations automatically. Review and promote one with:
+WATCH-or-higher posts can nominate public usernames. The monitor resolves a
+bounded batch only to verify entity type and public username; it does not join
+or read candidates at that stage. Once a handle has been seen in at least two
+distinct configured sources, an offline hourly policy job can append it to the
+registry. Each run is capped at five additions and the managed registry stops
+at 100 configured sources. The monitor then applies its normal public-channel
+collection path.
+
+Review the queue or promote one manually with:
 
 ```bash
 sudo -u scamshield /opt/scamshield/current/.venv/bin/python \
@@ -66,6 +74,11 @@ Run `reject` as the `scamshield` user because it updates SQLite; run `approve`
 or `add-public` as root because those commands update the root-owned source
 registry. `approve` opens SQLite read-only and is marked approved after the
 monitor resolves it.
+
+The privacy-minimized monitoring summary is also copied into
+`/var/lib/scamshield/handoffs/narcoscope/` as a group-readable private handoff.
+NarcoScope receives no Telegram session, credentials, raw messages, exact IOCs,
+source identifiers, or access to ScamShield's private review directory.
 
 ## First-time server bootstrap
 
@@ -165,7 +178,8 @@ production secrets.
 ## Operations
 
 ```bash
-systemctl status scamshield-bot scamshield-monitor scamshield-feed.timer
+systemctl status scamshield-bot scamshield-monitor scamshield-feed.timer \
+  scamshield-source-expansion.timer
 journalctl -u scamshield-bot -u scamshield-monitor --since today
 sudo -u scamshield test -s /var/lib/scamshield/review/scamshield-review.jsonl
 sudo -u scamshield test -s /var/lib/scamshield/review/scamshield-monitoring-summary.json

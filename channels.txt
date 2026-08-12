@@ -25,6 +25,11 @@ vx_underground
 shannewsburmese
 dvbtvnews
 mizzimatv
+myanmarnownews
+theirrawaddy
+bbcnewsburmese
+rfaburmeseofficial
+gnlmnews
 
 # Seed: operator channel observed in the 2026-07 screenshots. PRIVATE, so
 # t.me/s/ returns nothing for it. Left here as a record, not as a target;

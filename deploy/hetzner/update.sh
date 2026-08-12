@@ -35,6 +35,12 @@ pal_current=/opt/palimpsest/current
   exit 78
 }
 
+getent group intelligence-review >/dev/null 2>&1 || \
+  groupadd --system intelligence-review
+usermod --append --groups intelligence-review scamshield
+install -d -o scamshield -g intelligence-review -m 2750 \
+  /var/lib/scamshield/handoffs/narcoscope
+
 git -C "$scam_source" fetch --prune origin master
 git -C "$scam_source" cat-file -e "${target}^{commit}"
 git -C "$scam_source" merge-base --is-ancestor "$target" origin/master || {
@@ -118,6 +124,17 @@ install_runtime_contract() {
     install -o root -g root -m 0644 \
       "$release/deploy/hetzner/$unit" "/etc/systemd/system/$unit"
   done
+  for unit in scamshield-source-expansion.service \
+              scamshield-source-expansion.timer; do
+    if [[ -f "$release/deploy/hetzner/$unit" ]]; then
+      install -o root -g root -m 0644 \
+        "$release/deploy/hetzner/$unit" "/etc/systemd/system/$unit"
+    else
+      systemctl disable --now scamshield-source-expansion.timer \
+        >/dev/null 2>&1 || true
+      rm -f "/etc/systemd/system/$unit"
+    fi
+  done
   systemctl daemon-reload
 }
 
@@ -140,13 +157,15 @@ rollback() {
 atomic_link "$pal_current" "$pal_release"
 atomic_link "$scam_current" "$scam_release"
 install_runtime_contract "$scam_release"
-systemctl enable scamshield-bot.service scamshield-feed.timer >/dev/null
+systemctl enable scamshield-bot.service scamshield-feed.timer \
+  scamshield-source-expansion.timer >/dev/null
 
 if [[ "$mode" != "--no-restart" ]]; then
   started_at="$(date --iso-8601=seconds)"
   (( bot_was_active )) && systemctl restart scamshield-bot.service
   (( monitor_was_active )) && systemctl restart scamshield-monitor.service
   systemctl enable --now scamshield-feed.timer >/dev/null
+  systemctl enable --now scamshield-source-expansion.timer >/dev/null
   sleep 8
   if (( bot_was_active )) && \
       ! systemctl is-active --quiet scamshield-bot.service; then

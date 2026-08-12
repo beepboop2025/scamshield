@@ -5,9 +5,11 @@ connects with that saved session; it never prompts for a phone, OTP, or 2FA
 password under systemd.  For every configured source it combines live updates,
 Telethon update catch-up, and a bounded durable history cursor.
 
-The source registry remains an allowlist.  Public references discovered inside
-flagged messages enter a private candidate queue and are never auto-resolved or
-auto-joined.  Media is not downloaded; text and captions alone are classified.
+The source registry remains an allowlist. Public references discovered inside
+flagged messages enter a private candidate queue. The monitor may resolve those
+handles without joining them so a separate, credential-free policy job can
+promote only corroborated public channels. Media is not downloaded; text and
+captions alone are classified.
 """
 
 from __future__ import annotations
@@ -15,11 +17,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 import urllib.parse
 import urllib.request
 from contextlib import suppress
 
-from telethon import TelegramClient, errors, events, utils
+from telethon import TelegramClient, errors, events, types, utils
 from telethon.tl.functions.channels import JoinChannelRequest
 
 from scamshield.analysis import AnalysisService, ObservationContext
@@ -219,6 +222,69 @@ class MonitorRuntime:
         if not self.sources_by_peer:
             log.warning("no configured Telegram sources are currently resolved")
 
+    async def verify_discovery_candidates(self) -> int:
+        """Resolve a bounded candidate batch without joining or reading it."""
+
+        if not self.settings.discovery_verify_enabled:
+            return 0
+        candidates = STORE.source_candidates_for_verification(
+            min_hits=self.settings.discovery_verify_min_hits,
+            min_sources=self.settings.discovery_verify_min_sources,
+            limit=self.settings.discovery_verify_batch,
+        )
+        checked = 0
+        for candidate in candidates:
+            now = int(time.time())
+            status = "RETRY"
+            entity_kind = ""
+            canonical = ""
+            error_code = ""
+            next_check = now + self.settings.discovery_retry_seconds
+            try:
+                entity = await self.client.get_entity(candidate)
+                entity_kind = type(entity).__name__
+                username = getattr(entity, "username", None)
+                if isinstance(entity, types.Channel) and username:
+                    status = "VERIFIED_PUBLIC_CHANNEL"
+                    canonical = f"@{username.lower()}"
+                    next_check = now + self.settings.discovery_recheck_seconds
+                else:
+                    status = "NOT_CHANNEL"
+                    next_check = now + self.settings.discovery_recheck_seconds
+            except (errors.UsernameInvalidError, errors.UsernameNotOccupiedError, ValueError) as exc:
+                status = "INVALID"
+                error_code = type(exc).__name__
+                next_check = now + self.settings.discovery_recheck_seconds
+            except errors.FloodWaitError as exc:
+                error_code = type(exc).__name__
+                flood_wait = max(0, int(getattr(exc, "seconds", 0)))
+                next_check = now + max(
+                    self.settings.discovery_retry_seconds,
+                    flood_wait,
+                )
+            except errors.RPCError as exc:
+                error_code = type(exc).__name__
+            except Exception as exc:
+                error_code = type(exc).__name__
+                log.warning(
+                    "candidate verification failed for %s (%s)",
+                    source_reference_digest(candidate),
+                    error_code,
+                )
+            STORE.record_source_candidate_verification(
+                candidate,
+                status,
+                entity_kind=entity_kind,
+                canonical_reference=canonical,
+                error_code=error_code,
+                checked_at=now,
+                next_check=next_check,
+            )
+            checked += 1
+        if checked:
+            log.info("verified %d bounded public-source candidate(s)", checked)
+        return checked
+
     def _replace_event_handler(self) -> None:
         if self._event_builder is not None:
             self.client.remove_event_handler(self._handler, self._event_builder)
@@ -265,9 +331,11 @@ async def maintenance_loop(runtime: MonitorRuntime) -> None:
     while True:
         try:
             processed = await runtime.collector.reconcile_sources(runtime.sources)
+            verified = await runtime.verify_discovery_candidates()
             notify_systemd(
                 "STATUS=connected; "
-                f"sources={len(runtime.sources)}; reconciled={processed}"
+                f"sources={len(runtime.sources)}; reconciled={processed}; "
+                f"candidates_checked={verified}"
             )
         except Exception as exc:
             log.exception("monitor maintenance failed (%s)", type(exc).__name__)

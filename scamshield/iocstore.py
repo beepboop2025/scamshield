@@ -129,6 +129,19 @@ CREATE TABLE IF NOT EXISTS source_candidate_sources (
     PRIMARY KEY (candidate, source_key)
 );
 
+CREATE TABLE IF NOT EXISTS source_candidate_verifications (
+    candidate TEXT PRIMARY KEY,
+    verification_status TEXT NOT NULL,
+    entity_kind TEXT NOT NULL DEFAULT '',
+    canonical_reference TEXT NOT NULL DEFAULT '',
+    checked_at INTEGER NOT NULL,
+    next_check INTEGER NOT NULL,
+    error_code TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS source_candidate_verifications_due
+    ON source_candidate_verifications(verification_status, next_check);
+
 CREATE TABLE IF NOT EXISTS monetary_observations (
     observation_id TEXT PRIMARY KEY,
     assessment_id TEXT NOT NULL,
@@ -619,6 +632,138 @@ class IocStore:
             (candidate,),
         ).fetchone()
         return None if row is None else (str(row[0]), int(row[1]), str(row[2]))
+
+    def source_candidates_for_verification(
+        self,
+        *,
+        min_hits: int = 1,
+        min_sources: int = 1,
+        limit: int = 20,
+        now: int | None = None,
+    ) -> list[str]:
+        """Return bounded, due public-handle candidates for entity inspection."""
+
+        if isinstance(min_hits, bool) or not 1 <= min_hits <= 1_000_000:
+            raise ValueError("min_hits must be in [1, 1000000]")
+        if isinstance(min_sources, bool) or not 1 <= min_sources <= 10_000:
+            raise ValueError("min_sources must be in [1, 10000]")
+        if isinstance(limit, bool) or not 1 <= limit <= 1000:
+            raise ValueError("limit must be in [1, 1000]")
+        timestamp = int(time.time()) if now is None else now
+        rows = self.conn.execute(
+            """SELECT c.candidate
+               FROM source_candidates AS c
+               LEFT JOIN source_candidate_sources AS s
+                 ON s.candidate = c.candidate
+               LEFT JOIN source_candidate_verifications AS v
+                 ON v.candidate = c.candidate
+               WHERE c.status = 'PENDING'
+                 AND c.hits >= ?
+                 AND c.candidate LIKE '@%'
+                 AND (v.next_check IS NULL OR v.next_check <= ?)
+               GROUP BY c.candidate, c.hits, c.last_seen
+               HAVING COUNT(s.source_key) >= ?
+               ORDER BY COUNT(s.source_key) DESC, c.hits DESC,
+                        c.last_seen DESC, c.candidate
+               LIMIT ?""",
+            (min_hits, timestamp, min_sources, limit),
+        ).fetchall()
+        return [str(row[0]) for row in rows]
+
+    def record_source_candidate_verification(
+        self,
+        candidate: str,
+        status: str,
+        *,
+        entity_kind: str = "",
+        canonical_reference: str = "",
+        error_code: str = "",
+        checked_at: int | None = None,
+        next_check: int | None = None,
+    ) -> bool:
+        """Record a credentialed entity check without storing Telegram IDs."""
+
+        allowed = {"VERIFIED_PUBLIC_CHANNEL", "NOT_CHANNEL", "INVALID", "RETRY"}
+        if status not in allowed:
+            raise ValueError("unknown source verification status")
+        if status == "VERIFIED_PUBLIC_CHANNEL":
+            from .telegram_sources import normalize_source_reference
+
+            canonical_reference = normalize_source_reference(canonical_reference)
+            if not canonical_reference.startswith("@"):
+                raise ValueError("verified source must have a public username")
+        elif canonical_reference:
+            raise ValueError("only verified public channels may have a canonical reference")
+        timestamp = int(time.time()) if checked_at is None else checked_at
+        due = timestamp if next_check is None else next_check
+        if due < timestamp:
+            raise ValueError("next_check must not precede checked_at")
+        with self.conn:
+            updated = self.conn.execute(
+                """INSERT INTO source_candidate_verifications (
+                       candidate, verification_status, entity_kind,
+                       canonical_reference, checked_at, next_check, error_code
+                   )
+                   SELECT candidate, ?, ?, ?, ?, ?, ?
+                   FROM source_candidates WHERE candidate = ?
+                   ON CONFLICT(candidate) DO UPDATE SET
+                       verification_status = excluded.verification_status,
+                       entity_kind = excluded.entity_kind,
+                       canonical_reference = excluded.canonical_reference,
+                       checked_at = excluded.checked_at,
+                       next_check = excluded.next_check,
+                       error_code = excluded.error_code""",
+                (
+                    status,
+                    entity_kind[:64],
+                    canonical_reference,
+                    timestamp,
+                    due,
+                    error_code[:128],
+                    candidate,
+                ),
+            )
+        return updated.rowcount == 1
+
+    def verified_source_candidates(
+        self,
+        *,
+        min_hits: int = 2,
+        min_sources: int = 2,
+        max_age: int = 86_400,
+        limit: int = 5,
+        now: int | None = None,
+    ) -> list[tuple[str, int, int, int]]:
+        """Return fresh, corroborated public channels eligible for promotion."""
+
+        if isinstance(min_hits, bool) or not 1 <= min_hits <= 1_000_000:
+            raise ValueError("min_hits must be in [1, 1000000]")
+        if isinstance(min_sources, bool) or not 1 <= min_sources <= 10_000:
+            raise ValueError("min_sources must be in [1, 10000]")
+        if isinstance(max_age, bool) or not 60 <= max_age <= 2_592_000:
+            raise ValueError("max_age must be in [60, 2592000]")
+        if isinstance(limit, bool) or not 1 <= limit <= 1000:
+            raise ValueError("limit must be in [1, 1000]")
+        timestamp = int(time.time()) if now is None else now
+        return self.conn.execute(
+            """SELECT v.canonical_reference, c.hits,
+                      COUNT(s.source_key) AS source_count, v.checked_at
+               FROM source_candidates AS c
+               JOIN source_candidate_verifications AS v
+                 ON v.candidate = c.candidate
+               LEFT JOIN source_candidate_sources AS s
+                 ON s.candidate = c.candidate
+               WHERE c.status = 'PENDING'
+                 AND c.hits >= ?
+                 AND v.verification_status = 'VERIFIED_PUBLIC_CHANNEL'
+                 AND v.checked_at >= ?
+               GROUP BY c.candidate, v.canonical_reference, c.hits, v.checked_at
+               HAVING COUNT(s.source_key) >= ?
+               ORDER BY source_count DESC, c.hits DESC, v.checked_at DESC,
+                        v.canonical_reference
+               LIMIT ?""",
+            (min_hits, timestamp - max_age, min_sources, limit),
+        ).fetchall()
 
     def set_source_candidate_status(self, candidate: str, status: str) -> bool:
         if status not in {"APPROVED", "REJECTED"}:

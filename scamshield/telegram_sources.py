@@ -169,6 +169,12 @@ class MonitorSettings:
     max_analysis_concurrency: int = 4
     flood_sleep_threshold: int = 60
     auto_join_public: bool = True
+    discovery_verify_enabled: bool = True
+    discovery_verify_batch: int = 20
+    discovery_verify_min_hits: int = 1
+    discovery_verify_min_sources: int = 1
+    discovery_recheck_seconds: int = 86_400
+    discovery_retry_seconds: int = 3_600
 
     @classmethod
     def from_environment(
@@ -178,6 +184,9 @@ class MonitorSettings:
         auto_join = env.get("SCAMSHIELD_AUTO_JOIN_PUBLIC", "1").strip()
         if auto_join not in {"0", "1"}:
             raise ValueError("SCAMSHIELD_AUTO_JOIN_PUBLIC must be 0 or 1")
+        verify_enabled = env.get("SCAMSHIELD_DISCOVERY_VERIFY_ENABLED", "1").strip()
+        if verify_enabled not in {"0", "1"}:
+            raise ValueError("SCAMSHIELD_DISCOVERY_VERIFY_ENABLED must be 0 or 1")
         return cls(
             initial_history=_bounded_int(
                 env, "SCAMSHIELD_INITIAL_HISTORY", 100, minimum=0, maximum=1000,
@@ -198,6 +207,26 @@ class MonitorSettings:
                 env, "SCAMSHIELD_FLOOD_SLEEP_THRESHOLD", 60, minimum=0, maximum=86400,
             ),
             auto_join_public=auto_join == "1",
+            discovery_verify_enabled=verify_enabled == "1",
+            discovery_verify_batch=_bounded_int(
+                env, "SCAMSHIELD_DISCOVERY_VERIFY_BATCH", 20, minimum=1, maximum=100,
+            ),
+            discovery_verify_min_hits=_bounded_int(
+                env, "SCAMSHIELD_DISCOVERY_VERIFY_MIN_HITS", 1,
+                minimum=1, maximum=1_000_000,
+            ),
+            discovery_verify_min_sources=_bounded_int(
+                env, "SCAMSHIELD_DISCOVERY_VERIFY_MIN_SOURCES", 1,
+                minimum=1, maximum=10_000,
+            ),
+            discovery_recheck_seconds=_bounded_int(
+                env, "SCAMSHIELD_DISCOVERY_RECHECK_SECONDS", 86_400,
+                minimum=3_600, maximum=2_592_000,
+            ),
+            discovery_retry_seconds=_bounded_int(
+                env, "SCAMSHIELD_DISCOVERY_RETRY_SECONDS", 3_600,
+                minimum=300, maximum=86_400,
+            ),
         )
 
 

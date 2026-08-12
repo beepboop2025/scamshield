@@ -2,7 +2,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from manage_sources import append_public_source
+from manage_sources import append_public_source, auto_promote_sources
+from scamshield.iocstore import IocStore
 from scamshield.telegram_sources import (
     MAX_CONFIGURED_SOURCES,
     MonitorSettings,
@@ -64,9 +65,17 @@ class TelegramSourceRegistryTests(unittest.TestCase):
             "SCAMSHIELD_ANALYSIS_CONCURRENCY": "2",
             "SCAMSHIELD_FLOOD_SLEEP_THRESHOLD": "30",
             "SCAMSHIELD_AUTO_JOIN_PUBLIC": "0",
+            "SCAMSHIELD_DISCOVERY_VERIFY_ENABLED": "1",
+            "SCAMSHIELD_DISCOVERY_VERIFY_BATCH": "7",
+            "SCAMSHIELD_DISCOVERY_VERIFY_MIN_HITS": "2",
+            "SCAMSHIELD_DISCOVERY_VERIFY_MIN_SOURCES": "2",
+            "SCAMSHIELD_DISCOVERY_RECHECK_SECONDS": "7200",
+            "SCAMSHIELD_DISCOVERY_RETRY_SECONDS": "600",
         })
         self.assertEqual(settings.initial_history, 25)
         self.assertFalse(settings.auto_join_public)
+        self.assertEqual(settings.discovery_verify_batch, 7)
+        self.assertEqual(settings.discovery_verify_min_sources, 2)
         with self.assertRaisesRegex(ValueError, "SCAMSHIELD_BACKFILL_BATCH"):
             MonitorSettings.from_environment({"SCAMSHIELD_BACKFILL_BATCH": "1001"})
 
@@ -93,6 +102,70 @@ class TelegramSourceRegistryTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "limited to 500"):
                 append_public_source(path, "@one_source_too_many")
+
+    def test_auto_promotion_requires_fresh_verification_and_distinct_sources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "channels.txt"
+            path.write_text("# protected registry\n@existing_source\n")
+            store = IocStore(root / "scamshield.db")
+            try:
+                with store.conn:
+                    store.conn.execute(
+                        """INSERT INTO source_candidates (
+                               candidate, first_seen, last_seen, hits,
+                               status, referrer_source_key, families_json
+                           ) VALUES ('@verified_public', 100, 150, 3, 'PENDING', ?, '[\"sales\"]')""",
+                        ("a" * 24,),
+                    )
+                    for key in ("a" * 24, "b" * 24):
+                        store.conn.execute(
+                            """INSERT INTO source_candidate_sources (
+                                   candidate, source_key, first_seen, last_seen, hits
+                               ) VALUES ('@verified_public', ?, 100, 150, 1)""",
+                            (key,),
+                        )
+                self.assertTrue(store.record_source_candidate_verification(
+                    "@verified_public",
+                    "VERIFIED_PUBLIC_CHANNEL",
+                    canonical_reference="@Verified_Public",
+                    checked_at=150,
+                    next_check=300,
+                ))
+                self.assertEqual(
+                    store.source_candidates_for_verification(now=200),
+                    [],
+                )
+                added = auto_promote_sources(
+                    store,
+                    path,
+                    min_hits=2,
+                    min_sources=2,
+                    max_configured=10,
+                    verification_max_age=100,
+                    now=200,
+                )
+                self.assertEqual(added, ("@verified_public",))
+                self.assertEqual(
+                    parse_source_registry(path).references,
+                    ("@existing_source", "@verified_public"),
+                )
+            finally:
+                store.close()
+
+    def test_auto_promotion_honors_registry_cap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "channels.txt"
+            path.write_text("@existing_source\n")
+            store = IocStore(root / "scamshield.db")
+            try:
+                self.assertEqual(
+                    auto_promote_sources(store, path, max_configured=1),
+                    (),
+                )
+            finally:
+                store.close()
 
 
 if __name__ == "__main__":

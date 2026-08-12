@@ -127,7 +127,7 @@ class TelegramCollector:
                     self.analyzer.analyze, text, collection=context,
                 )
             candidates: tuple[str, ...] = ()
-            if TIER_RANK[result.overall_tier] >= TIER_RANK["LIKELY_SCAM"]:
+            if TIER_RANK[result.overall_tier] >= TIER_RANK["WATCH"]:
                 candidates = tuple(
                     value for value in discovery_candidates(result.iocs)
                     if value.casefold() != source.reference.casefold()

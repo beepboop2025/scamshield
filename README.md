@@ -156,6 +156,8 @@ Useful optional settings:
 | `SCAMSHIELD_DB` | `scamshield.db` | Shared SQLite assessment/IOC/coverage store |
 | `SCAMSHIELD_SESSION` | `scamshield_monitor` in the repository | Persistent Telethon session base path |
 | `SCAMSHIELD_CHANNELS_FILE` | `channels.txt` in the repository | Public/authorized source registry |
+| `SCAMSHIELD_DISCOVERY_VERIFY_ENABLED` | `1` | Resolve candidate handles without joining, for bounded public-source expansion |
+| `SCAMSHIELD_DISCOVERY_VERIFY_BATCH` | `20` | Maximum candidate entities checked per maintenance pass |
 | `SCAMSHIELD_STORE_RAW_SAMPLES` | `0` | Opt in to storing 300-character raw IOC samples |
 | `SCAMSHIELD_PALIMPSEST_ROOT` | unset | Enable canonical pack + capsule bridge |
 | `SCAMSHIELD_PALIMPSEST_OUTBOX` | `var/scamshield-inbox` | Relative Palimpsest runtime outbox |
@@ -202,4 +204,8 @@ secrets and mutable state outside immutable releases, runs the bot and
 configured-channel monitor as hardened systemd services, produces a private
 Palimpsest review queue, and can automatically deploy every green `master`
 commit through a forced-command GitHub Actions key. The Telethon session is
-authorized once and persists across code deployments.
+authorized once and persists across code deployments. Discovery can expand the
+registry up to 100 sources: the monitor first verifies that a nominated handle
+is a public channel without joining it, and an offline hourly policy job
+promotes at most five candidates seen in at least two distinct configured
+sources. Private invitations and user/bot handles remain ineligible.

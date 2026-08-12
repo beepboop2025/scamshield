@@ -187,7 +187,9 @@ precision the original table did not record.
 - SQLite uses WAL and a five-second busy timeout for the bot/monitor processes.
 - Clean messages are not exported and do not create assessment rows; they only
   increment coverage.
-- An empty `channels.txt` registers no Telethon message handler.
+- An empty `channels.txt` registers no Telethon message handler. Candidate
+  verification never registers a handler or joins a channel; only the separate
+  corroboration-gated promotion job can add a verified public username.
 - Bridge input is capped at 1 MiB and capsule output at 32 MiB; subprocesses use
   an argv list, no shell, a timeout, and a minimal environment that excludes
   Telegram tokens, API keys, database URLs, and the pseudonym HMAC key.

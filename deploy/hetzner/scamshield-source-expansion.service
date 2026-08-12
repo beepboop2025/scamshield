@@ -1,0 +1,38 @@
+[Unit]
+Description=Promote corroborated Telegram public channels into ScamShield
+After=scamshield-monitor.service
+ConditionPathExists=/var/lib/scamshield/scamshield.db
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/scamshield/current
+Environment=SCAMSHIELD_DB=/var/lib/scamshield/scamshield.db
+UMask=0027
+ExecStart=/opt/scamshield/current/.venv/bin/python /opt/scamshield/current/manage_sources.py --db /var/lib/scamshield/scamshield.db --channels /etc/scamshield/channels.txt auto-promote --min-hits 2 --min-sources 2 --limit 5 --max-configured 100 --verification-max-age 86400
+PrivateNetwork=true
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RemoveIPC=true
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+ReadOnlyPaths=/opt/scamshield /var/lib/scamshield
+ReadWritePaths=/etc/scamshield/channels.txt
+MemoryMax=256M
+TasksMax=32
