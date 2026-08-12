@@ -57,7 +57,7 @@ if _env.exists():
             k, _, v = line.partition("=")
             os.environ.setdefault(k.strip(), v.strip())
 
-from telegram import Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import (Application, CommandHandler, ContextTypes,
                           MessageHandler, filters)
@@ -74,6 +74,7 @@ from scamshield.liquidity_ui import (
     review_usage,
 )
 from scamshield.rendering import render_analysis
+from scamshield.surfaces import reporting_steps, typology_catalog
 
 logging.basicConfig(level=logging.INFO)
 # httpx logs every request URL at INFO, and a Telegram request URL embeds the
@@ -87,6 +88,20 @@ OWNER_ID = int(os.environ.get("SCAMSHIELD_OWNER_ID", "0"))
 STORE = IocStore(os.environ.get("SCAMSHIELD_DB", "scamshield.db"))
 ANALYZER = AnalysisService.from_environment()
 STORE_RAW_SAMPLES = os.environ.get("SCAMSHIELD_STORE_RAW_SAMPLES", "0") == "1"
+PALIMPSEST_URL = os.environ.get("PALIMPSEST_URL", "https://palimpsest.info")
+NARCOSCOPE_URL = os.environ.get(
+    "NARCOSCOPE_URL", "https://narcoscope.com"
+)
+EVIDENCE_CHANNEL_URL = os.environ.get("EVIDENCE_CHANNEL_URL", "").strip()
+
+PUBLIC_COMMANDS = (
+    BotCommand("start", "Scan a suspicious message"),
+    BotCommand("how", "See what ScamShield checks"),
+    BotCommand("typologies", "Explore covered scam patterns"),
+    BotCommand("privacy", "See what is stored and shared"),
+    BotCommand("explore", "Open the evidence products"),
+    BotCommand("help", "Show commands and reporting help"),
+)
 
 # ---------------------------------------------------------------------------
 # Guardian mode master switch. Off by default, and deliberately explicit:
@@ -168,21 +183,138 @@ def start_text() -> str:
     drift away from the handler registration in main(): both read the same
     flag, so promising group protection and providing it are one decision.
     """
-    out = ("Forward me any suspicious Telegram message and I'll check it for "
-           "known scam, money-mule, illicit-market, trafficking-risk, "
-           "counterfeit, and phishing patterns, explain the evidence limits, "
-           "and show reporting steps.")
+    out = (
+        "<b>Turn a suspicious message into an evidence-bounded risk readout.</b>\n\n"
+        "Forward or paste the message here. ScamShield checks for money-mule, "
+        "phishing, impersonation, advance-fee, counterfeit, illicit-market, and "
+        "trafficking-risk patterns. You get the matched mechanics, evidence "
+        "limits, and practical reporting steps — usually in one reply.\n\n"
+        "No supported pattern is a guarantee of safety."
+    )
     if GUARDIAN_ENABLED:
-        out += (" You can also add me to a group as admin and I'll watch "
+        out += ("\n\nYou can also add me to a group as admin and I'll watch "
                 "every message there.")
     else:
-        out += (" I work in this private chat only. I don't monitor groups, "
+        out += ("\n\n<b>Private-chat Shield mode is on.</b> I don't monitor groups, "
                 "so adding me to one will not protect it.")
+    out += "\n\n<b>Try it now:</b> forward the message you are unsure about."
     return out
 
 
 async def cmd_start(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(start_text())
+    await update.message.reply_text(
+        start_text(), parse_mode=ParseMode.HTML, reply_markup=product_keyboard(),
+    )
+
+
+def product_keyboard() -> InlineKeyboardMarkup:
+    rows = []
+    if EVIDENCE_CHANNEL_URL:
+        rows.append([InlineKeyboardButton("Follow Evidence Signal", url=EVIDENCE_CHANNEL_URL)])
+    rows.append([
+        InlineKeyboardButton("Palimpsest", url=PALIMPSEST_URL),
+        InlineKeyboardButton("NarcoScope", url=NARCOSCOPE_URL),
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+def how_text() -> str:
+    return (
+        "<b>How the check works</b>\n\n"
+        "1. Forward or paste the suspicious message.\n"
+        "2. ScamShield looks for combinations of behaviour — payment pressure, "
+        "credential requests, fulfilment, coercion, and other transaction mechanics.\n"
+        "3. It returns the supported risk tier, why it matched, what it cannot prove, "
+        "and what to preserve or report.\n\n"
+        "A subject word alone is not enough, and a clean result is not a safety guarantee."
+    )
+
+
+async def cmd_how(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(how_text(), parse_mode=ParseMode.HTML)
+
+
+def privacy_text() -> str:
+    storage = (
+        "Raw message samples are retained only when the operator explicitly enables "
+        "SCAMSHIELD_STORE_RAW_SAMPLES; the production-safe default is off."
+    )
+    return (
+        "<b>Privacy boundary</b>\n\n"
+        "• Your submitted text is used to produce the reply.\n"
+        "• Indicators and privacy-minimized assessment records may be retained for "
+        "review; raw sample storage is off by default.\n"
+        "• Public API/MCP assessments are memory-only: no storage, no Palimpsest "
+        "bridge, and no raw text or exact IOC values in their response.\n"
+        f"• {html.escape(storage)}\n\n"
+        "Do not submit passwords, OTPs, PINs, seed phrases, or material you are not "
+        "authorized to share."
+    )
+
+
+async def cmd_privacy(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(privacy_text(), parse_mode=ParseMode.HTML)
+
+
+def typologies_text() -> str:
+    catalog = typology_catalog()
+    lines = [
+        "<b>Evidence typologies</b>",
+        f"Pack {html.escape(catalog['version'])} • {catalog['source_count']} published sources",
+        "",
+    ]
+    for item in catalog["typologies"]:
+        lines.append(
+            f"• <b>{html.escape(item['label'])}</b> "
+            f"<i>({html.escape(item['dimension'])})</i>"
+        )
+    lines.extend([
+        "",
+        "These are resemblance hypotheses, not identity or guilt findings. Forward a "
+        "message to see which evidence classes it actually supports.",
+    ])
+    return "\n".join(lines)
+
+
+async def cmd_typologies(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(typologies_text(), parse_mode=ParseMode.HTML)
+
+
+def explore_text() -> str:
+    return (
+        "<b>One evidence stack, three jobs</b>\n\n"
+        "• <b>ScamShield</b> — triage a suspicious message here.\n"
+        "• <b>Palimpsest</b> — inspect censorship, information-control, model-eval, "
+        "and evidence-newsroom signals.\n"
+        "• <b>NarcoScope</b> — inspect official drug-market records and "
+        "the stories built from them.\n\n"
+        "Open the products below or follow Evidence Signal for reviewed updates."
+    )
+
+
+async def cmd_explore(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        explore_text(), parse_mode=ParseMode.HTML, reply_markup=product_keyboard(),
+    )
+
+
+def help_text() -> str:
+    steps = reporting_steps()
+    india = steps["steps"][0]["action"]
+    return (
+        "<b>ScamShield commands</b>\n\n"
+        "/start — scan a suspicious message\n"
+        "/how — understand the evidence check\n"
+        "/typologies — see covered pattern families\n"
+        "/privacy — understand data handling\n"
+        "/explore — open Palimpsest, NarcoScope, and Evidence Signal\n"
+        "/help — show this guide\n\n"
+        f"<b>Financial fraud in India:</b> {html.escape(india)}"
+    )
+
+
+async def cmd_help(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(help_text(), parse_mode=ParseMode.HTML)
 
 
 async def cmd_digest(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
@@ -308,7 +440,8 @@ async def on_private(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     )
     _record_result(result, text)
     await update.message.reply_text(render_analysis(result, surface="private_submission"),
-                                    parse_mode=ParseMode.HTML)
+                                    parse_mode=ParseMode.HTML,
+                                    reply_markup=product_keyboard())
 
 
 async def on_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -383,12 +516,36 @@ async def _warn_on_guardian_mismatch(app: Application) -> None:
         log.warning("guardian getMe cross-check skipped: %s", e)
 
 
+async def _configure_public_surface(app: Application) -> None:
+    """Keep BotFather-facing discovery copy in sync with shipped commands."""
+    try:
+        await app.bot.set_my_name("ScamShield — Message Risk Check")
+        await app.bot.set_my_short_description(
+            "Forward a suspicious message. Get an evidence-bounded risk readout and reporting steps."
+        )
+        await app.bot.set_my_description(
+            "ScamShield checks user-submitted messages for supported scam, money-mule, "
+            "phishing, impersonation, illicit-market, and trafficking-risk patterns. "
+            "It explains what matched, what the evidence cannot prove, and what to do next. "
+            "Private-chat Shield mode is on; group monitoring is separately gated."
+        )
+        await app.bot.set_my_commands(PUBLIC_COMMANDS)
+    except Exception as exc:
+        log.warning("Telegram discovery metadata update skipped: %s", exc)
+    await _warn_on_guardian_mismatch(app)
+
+
 def main() -> None:
     if not TOKEN:
         raise SystemExit("Set SCAMSHIELD_TOKEN (from @BotFather) first.")
     app = (Application.builder().token(TOKEN)
-           .post_init(_warn_on_guardian_mismatch).build())
+           .post_init(_configure_public_surface).build())
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("how", cmd_how))
+    app.add_handler(CommandHandler("typologies", cmd_typologies))
+    app.add_handler(CommandHandler("privacy", cmd_privacy))
+    app.add_handler(CommandHandler("explore", cmd_explore))
+    app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("digest", cmd_digest))
     app.add_handler(CommandHandler("coverage", cmd_coverage))
     app.add_handler(CommandHandler("liquidity", cmd_liquidity))

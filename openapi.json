@@ -1,0 +1,77 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "ScamShield Local Assessment API",
+    "version": "1.0.0",
+    "description": "A loopback-first, non-persisting interface for evidence-bounded suspicious-message triage. Submitted text is not stored or returned. Exact IOC values are not returned."
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:8794",
+      "description": "Default local-only server"
+    }
+  ],
+  "paths": {
+    "/openapi.json": {
+      "get": {
+        "operationId": "getOpenAPI",
+        "summary": "Read this API contract",
+        "responses": {"200": {"description": "OpenAPI 3.1 document"}}
+      }
+    },
+    "/v1/health": {
+      "get": {
+        "operationId": "getHealth",
+        "summary": "Check service health",
+        "responses": {"200": {"description": "Healthy"}}
+      }
+    },
+    "/v1/capabilities": {
+      "get": {
+        "operationId": "getCapabilities",
+        "summary": "Discover supported interfaces and privacy boundaries",
+        "responses": {"200": {"description": "Capability catalog"}}
+      }
+    },
+    "/v1/typologies": {
+      "get": {
+        "operationId": "listTypologies",
+        "summary": "List versioned evidence typologies",
+        "responses": {"200": {"description": "Bounded typology catalog"}}
+      }
+    },
+    "/v1/reporting": {
+      "get": {
+        "operationId": "getReportingSteps",
+        "summary": "Get preservation and reporting guidance",
+        "responses": {"200": {"description": "Reporting guide"}}
+      }
+    },
+    "/v1/assess": {
+      "post": {
+        "operationId": "assessMessage",
+        "summary": "Assess one user-supplied suspicious message in memory",
+        "description": "The request is processed in memory and is not persisted or bridged. The response excludes the raw message and exact IOC values.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {"text": {"type": "string", "minLength": 1, "maxLength": 8000}},
+                "required": ["text"],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {"description": "Privacy-safe assessment"},
+          "400": {"description": "Invalid request"},
+          "413": {"description": "Request too large"},
+          "503": {"description": "Assessment unavailable"}
+        }
+      }
+    }
+  }
+}

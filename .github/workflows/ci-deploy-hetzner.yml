@@ -38,6 +38,7 @@ jobs:
         run: >-
           python -m compileall -q scamshield bot.py monitor.py login.py
           export_monitoring_summary.py manage_sources.py
+          api/scamshield_api.py mcp/scamshield_mcp.py
       - name: Validate deployment scripts and systemd units
         shell: bash
         run: |

@@ -1,0 +1,26 @@
+{
+  "schema_version": "evidence-product-card/v1",
+  "name": "ScamShield",
+  "tagline": "Forward the message. See the mechanics. Know what to do next.",
+  "summary": "Evidence-bounded suspicious-message triage for Telegram users, developers, and research workflows.",
+  "primary_action": {
+    "label": "Check a message on Telegram",
+    "url": "https://t.me/Scamshield_2_bot"
+  },
+  "surfaces": {
+    "telegram": "https://t.me/Scamshield_2_bot",
+    "rest": "local-only; see openapi.json",
+    "mcp": "stdio; run python3 mcp/scamshield_mcp.py",
+    "intelligence_pack": "scamshield/data/intelligence-pack-v1.json"
+  },
+  "trust": {
+    "claim": "Pattern evidence for triage, never a finding of guilt or verified illegality.",
+    "api_storage": "none",
+    "api_exact_ioc_disclosure": false,
+    "human_review_required": true
+  },
+  "related_products": [
+    {"name": "Palimpsest", "url": "https://palimpsest.info"},
+    {"name": "NarcoScope", "url": "https://narcoscope.com"}
+  ]
+}
