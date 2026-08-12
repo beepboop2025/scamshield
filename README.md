@@ -1,6 +1,6 @@
 # ScamShield
 
-ScamShield is a Telegram risk-intelligence system for suspicious payments,
+ScamShield by Palimpsest is a Telegram risk-intelligence system for suspicious payments,
 scams, and illicit-market activity. It combines a hardened money-flow detector,
 conjunctive threat-family rules, a live USDT/INR reference oracle, and
 evidence-bounded provenance hypotheses published by Palimpsest.
@@ -82,6 +82,10 @@ and `/help`. Startup synchronizes the bot name, descriptions, and command menu
 with the shipped behavior. Set `EVIDENCE_CHANNEL_URL` after the shared
 NarcoScope–Palimpsest–ScamShield news channel exists to add its follow button;
 `PALIMPSEST_URL` and `NARCOSCOPE_URL` can override the related-product links.
+The bot also links to the crawlable
+[public safety guide](https://palimpsest.info/guides/telegram-scam-message-checker/),
+which explains interpretation and reporting outside Telegram. Override that
+link with `SCAMSHIELD_GUIDE_URL` only when deploying an equivalent guide.
 
 ## API and MCP
 
@@ -167,6 +171,7 @@ Useful optional settings:
 | `EVIDENCE_CHANNEL_URL` | unset | Shared evidence-news channel button shown in the bot |
 | `PALIMPSEST_URL` | `https://palimpsest.info` | Palimpsest discovery link |
 | `NARCOSCOPE_URL` | current Vercel site | NarcoScope discovery link |
+| `SCAMSHIELD_GUIDE_URL` | Palimpsest public guide | Crawlable safety and interpretation guide shown in the bot |
 | `SCAMSHIELD_API_HOST` | `127.0.0.1` | Local REST bind address |
 | `SCAMSHIELD_API_PORT` | `8794` | Local REST port |
 

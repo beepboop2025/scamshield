@@ -1,10 +1,11 @@
 # ScamShield
 
-ScamShield performs evidence-bounded triage of user-supplied suspicious messages. It detects supported combinations of scam, money-flow, phishing, impersonation, counterfeit, illicit-market, and trafficking-risk mechanics. Results describe message patterns, not guilt, identity, legality, or the verified origin of funds.
+ScamShield by Palimpsest performs evidence-bounded triage of user-supplied suspicious messages. It detects supported combinations of scam, money-flow, phishing, impersonation, counterfeit, illicit-market, and trafficking-risk mechanics. Results describe message patterns, not guilt, identity, legality, or the verified origin of funds. This is the open-source Telegram system at @Scamshield_2_bot, not an affiliation with other products or agencies named ScamShield.
 
 ## Best public entry point
 
 - Telegram Shield bot: https://t.me/Scamshield_2_bot
+- Public safety and interpretation guide: https://palimpsest.info/guides/telegram-scam-message-checker/
 
 ## Developer surfaces
 
