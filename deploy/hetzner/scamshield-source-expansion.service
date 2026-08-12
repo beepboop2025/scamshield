@@ -2,14 +2,17 @@
 Description=Promote corroborated Telegram public channels into ScamShield
 After=scamshield-monitor.service
 ConditionPathExists=/var/lib/scamshield/scamshield.db
+ConditionPathExists=/var/lib/scamshield/scamshield.db-wal
 ConditionPathExists=/var/lib/scamshield/scamshield.db-shm
 
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/scamshield/current
-Environment=SCAMSHIELD_DB=/var/lib/scamshield/scamshield.db
+Environment=SCAMSHIELD_DB=/run/scamshield-source-expansion/scamshield.db
 UMask=0027
-ExecStart=/opt/scamshield/current/.venv/bin/python /opt/scamshield/current/manage_sources.py --db /var/lib/scamshield/scamshield.db --channels /etc/scamshield/channels.txt auto-promote --min-hits 2 --min-sources 2 --limit 5 --max-configured 100 --verification-max-age 86400
+RuntimeDirectory=scamshield-source-expansion
+RuntimeDirectoryMode=0700
+ExecStart=/opt/scamshield/current/.venv/bin/python /opt/scamshield/current/manage_sources.py --db /run/scamshield-source-expansion/scamshield.db --channels /etc/scamshield/channels.txt auto-promote --min-hits 2 --min-sources 2 --limit 5 --max-configured 100 --verification-max-age 86400
 PrivateNetwork=true
 NoNewPrivileges=true
 CapabilityBoundingSet=
@@ -33,10 +36,12 @@ RestrictNamespaces=true
 RemoveIPC=true
 RestrictAddressFamilies=AF_UNIX
 SystemCallArchitectures=native
-ReadOnlyPaths=/opt/scamshield /var/lib/scamshield
-ReadWritePaths=/etc/scamshield/channels.txt -/var/lib/scamshield/scamshield.db-shm
+ReadOnlyPaths=/opt/scamshield
+ReadWritePaths=/etc/scamshield/channels.txt
+BindReadOnlyPaths=/var/lib/scamshield/scamshield.db:/run/scamshield-source-expansion/scamshield.db
+BindReadOnlyPaths=/var/lib/scamshield/scamshield.db-wal:/run/scamshield-source-expansion/scamshield.db-wal
+BindPaths=/var/lib/scamshield/scamshield.db-shm:/run/scamshield-source-expansion/scamshield.db-shm
 InaccessiblePaths=/etc/scamshield/scamshield.env
-InaccessiblePaths=/var/lib/scamshield/telegram /var/lib/scamshield/review
-InaccessiblePaths=/var/lib/scamshield/palimpsest-inbox /var/lib/scamshield/handoffs
+InaccessiblePaths=/var/lib/scamshield
 MemoryMax=256M
 TasksMax=32

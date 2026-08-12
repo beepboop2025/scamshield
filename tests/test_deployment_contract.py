@@ -16,17 +16,15 @@ class DeploymentContractTests(unittest.TestCase):
             if line.startswith("ReadWritePaths=")
             for path in line.removeprefix("ReadWritePaths=").split()
         }
-        self.assertEqual(writable, {
-            "/etc/scamshield/channels.txt",
-            "-/var/lib/scamshield/scamshield.db-shm",
-        })
-        for inaccessible in (
-            "/etc/scamshield/scamshield.env",
-            "/var/lib/scamshield/telegram",
-            "/var/lib/scamshield/review",
-            "/var/lib/scamshield/handoffs",
+        self.assertEqual(writable, {"/etc/scamshield/channels.txt"})
+        for mount in (
+            "BindReadOnlyPaths=/var/lib/scamshield/scamshield.db:",
+            "BindReadOnlyPaths=/var/lib/scamshield/scamshield.db-wal:",
+            "BindPaths=/var/lib/scamshield/scamshield.db-shm:",
+            "InaccessiblePaths=/etc/scamshield/scamshield.env",
+            "InaccessiblePaths=/var/lib/scamshield",
         ):
-            self.assertIn(inaccessible, unit)
+            self.assertIn(mount, unit)
 
     def test_deploy_wrapper_runs_the_verified_target_updater(self):
         wrapper = (ROOT / "deploy/hetzner/deploy-wrapper.sh").read_text()
