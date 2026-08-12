@@ -1,5 +1,6 @@
 [Unit]
 Description=Promote corroborated Telegram public channels into ScamShield
+Requires=scamshield-monitor.service
 After=scamshield-monitor.service
 ConditionPathExists=/var/lib/scamshield/scamshield.db
 ConditionPathExists=/var/lib/scamshield/scamshield.db-wal

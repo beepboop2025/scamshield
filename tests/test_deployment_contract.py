@@ -17,14 +17,31 @@ class DeploymentContractTests(unittest.TestCase):
             for path in line.removeprefix("ReadWritePaths=").split()
         }
         self.assertEqual(writable, {"/etc/scamshield/channels.txt"})
-        for mount in (
-            "BindReadOnlyPaths=/var/lib/scamshield/scamshield.db:",
-            "BindReadOnlyPaths=/var/lib/scamshield/scamshield.db-wal:",
-            "BindPaths=/var/lib/scamshield/scamshield.db-shm:",
-            "InaccessiblePaths=/etc/scamshield/scamshield.env",
-            "InaccessiblePaths=/var/lib/scamshield",
-        ):
-            self.assertIn(mount, unit)
+        directives = unit.splitlines()
+        self.assertEqual(
+            {line for line in directives if line.startswith("BindReadOnlyPaths=")},
+            {
+                "BindReadOnlyPaths=/var/lib/scamshield/scamshield.db:"
+                "/run/scamshield-source-expansion/scamshield.db",
+                "BindReadOnlyPaths=/var/lib/scamshield/scamshield.db-wal:"
+                "/run/scamshield-source-expansion/scamshield.db-wal",
+            },
+        )
+        self.assertEqual(
+            {line for line in directives if line.startswith("BindPaths=")},
+            {
+                "BindPaths=/var/lib/scamshield/scamshield.db-shm:"
+                "/run/scamshield-source-expansion/scamshield.db-shm",
+            },
+        )
+        self.assertEqual(
+            {line for line in directives if line.startswith("InaccessiblePaths=")},
+            {
+                "InaccessiblePaths=/etc/scamshield/scamshield.env",
+                "InaccessiblePaths=/var/lib/scamshield",
+            },
+        )
+        self.assertIn("Requires=scamshield-monitor.service", directives)
 
     def test_deploy_wrapper_runs_the_verified_target_updater(self):
         wrapper = (ROOT / "deploy/hetzner/deploy-wrapper.sh").read_text()
