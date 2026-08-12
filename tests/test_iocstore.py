@@ -144,6 +144,158 @@ class TestIocStore(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "24 lowercase hex"):
             self.store.assessment_review_context_by_id("not-an-assessment")
 
+    def test_monitor_receipts_are_idempotent_and_cursor_is_history_only(self):
+        source_key = "a" * 24
+        self.store.register_collector_source(
+            source_key,
+            configured_ref_sha256="b" * 24,
+            surface="public_channel",
+            authorization="public",
+            now=100,
+        )
+        self.assertEqual(self.store.source_cursor(source_key), (False, 0))
+        self.assertTrue(self.store.initialize_source_cursor(source_key, 40))
+        self.assertFalse(self.store.initialize_source_cursor(source_key, 5))
+
+        observed_at = "2026-08-08T12:30:00Z"
+        self.assertEqual(
+            self.store.claim_telegram_message(
+                source_key, 42, observed_at=observed_at, now=200,
+            ),
+            "CLAIMED",
+        )
+        self.assertEqual(
+            self.store.claim_telegram_message(
+                source_key, 42, observed_at=observed_at, now=201,
+            ),
+            "BUSY",
+        )
+        text = "Crystal meth stock available now. Home delivery, USDT. DM @nextwatch"
+        context = ObservationContext(
+            surface="public_channel",
+            authorization="public",
+            source_pseudonym=source_key,
+            script_hints=("latin",),
+            observed_at=observed_at,
+        )
+        result = self.service.analyze(text, collection=context)
+        self.store.record_telegram_result(
+            source_key,
+            42,
+            result,
+            candidates=("@nextwatch",),
+            now=202,
+        )
+
+        self.assertEqual(
+            self.store.claim_telegram_message(
+                source_key, 42, observed_at=observed_at, now=300,
+            ),
+            "COMPLETE",
+        )
+        self.assertEqual(self.store.source_cursor(source_key), (True, 40))
+        self.store.advance_source_cursor(source_key, 42)
+        self.assertEqual(self.store.source_cursor(source_key), (True, 42))
+        self.assertEqual(self.store.coverage_digest()[0][2:5], (1, 1, 0))
+        self.assertEqual(self.store.source_candidates()[0][0], "@nextwatch")
+        self.assertEqual(self.store.source_candidates()[0][4], 1)
+        self.assertEqual(self.store.source_candidate("@nextwatch")[0], "PENDING")
+        self.assertTrue(
+            self.store.set_source_candidate_status("@nextwatch", "APPROVED")
+        )
+        self.assertEqual(self.store.source_candidate("@nextwatch")[0], "APPROVED")
+
+    def test_failed_monitor_claim_is_retryable_and_counted_once_per_failure(self):
+        source_key = "c" * 24
+        self.store.register_collector_source(
+            source_key,
+            configured_ref_sha256="d" * 24,
+            surface="public_channel",
+            authorization="public",
+        )
+        observed_at = "2026-08-08T12:30:00Z"
+        self.assertEqual(
+            self.store.claim_telegram_message(
+                source_key, 7, observed_at=observed_at, now=100,
+            ),
+            "CLAIMED",
+        )
+        self.store.fail_telegram_message(
+            source_key,
+            7,
+            surface="public_channel",
+            observed_at=observed_at,
+            error_code="RuntimeError",
+        )
+        self.assertEqual(
+            self.store.claim_telegram_message(
+                source_key, 7, observed_at=observed_at, now=101,
+            ),
+            "CLAIMED",
+        )
+        coverage = self.store.coverage_digest()[0]
+        self.assertEqual(coverage[2:5], (0, 0, 1))
+
+    def test_non_text_monitor_message_completes_without_coverage(self):
+        source_key = "e" * 24
+        self.store.register_collector_source(
+            source_key,
+            configured_ref_sha256="f" * 24,
+            surface="public_channel",
+            authorization="public",
+        )
+        observed_at = "2026-08-08T12:30:00Z"
+        self.store.claim_telegram_message(
+            source_key, 9, observed_at=observed_at, now=100,
+        )
+        self.store.complete_telegram_skip(
+            source_key,
+            9,
+            reason="SKIPPED_NO_TEXT",
+            observed_at=observed_at,
+            now=101,
+        )
+        self.assertEqual(
+            self.store.claim_telegram_message(
+                source_key, 9, observed_at=observed_at, now=102,
+            ),
+            "COMPLETE",
+        )
+        self.assertEqual(self.store.coverage_digest(), [])
+
+    def test_candidate_review_distinguishes_hits_from_distinct_sources(self):
+        text = "Crystal meth stock available now. Home delivery, USDT. DM @crosssource"
+        for index, source_key in enumerate(("6" * 24, "7" * 24), start=1):
+            self.store.register_collector_source(
+                source_key,
+                configured_ref_sha256=("8" if index == 1 else "9") * 24,
+                surface="public_channel",
+                authorization="public",
+            )
+            observed_at = f"2026-08-08T12:0{index}:00Z"
+            self.store.claim_telegram_message(
+                source_key, index, observed_at=observed_at,
+            )
+            context = ObservationContext(
+                surface="public_channel",
+                authorization="public",
+                source_pseudonym=source_key,
+                script_hints=("latin",),
+                observed_at=observed_at,
+            )
+            result = self.service.analyze(text, collection=context)
+            self.store.record_telegram_result(
+                source_key,
+                index,
+                result,
+                candidates=("@crosssource",),
+            )
+
+        candidate = self.store.source_candidates()[0]
+        self.assertEqual(candidate[0], "@crosssource")
+        self.assertEqual(candidate[1], 2)
+        self.assertEqual(candidate[4], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -20,6 +20,12 @@ falconfeedsio
 cybernews
 vx_underground
 
+# Public Myanmar/Shan reporting seeds. These are context and discovery inputs,
+# not illicit-source labels; classifier matches remain human-review leads.
+shannewsburmese
+dvbtvnews
+mizzimatv
+
 # Seed: operator channel observed in the 2026-07 screenshots. PRIVATE, so
 # t.me/s/ returns nothing for it. Left here as a record, not as a target;
 # re-enable only for a logged-in scamshield path, never for login-free.
