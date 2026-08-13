@@ -176,6 +176,11 @@ Useful optional settings:
 | `SCAMSHIELD_CHANNELS_FILE` | `channels.txt` in the repository | Public/authorized source registry |
 | `SCAMSHIELD_DISCOVERY_VERIFY_ENABLED` | `1` | Resolve candidate handles without joining, for bounded public-source expansion |
 | `SCAMSHIELD_DISCOVERY_VERIFY_BATCH` | `20` | Maximum candidate entities checked per maintenance pass |
+| `SCAMSHIELD_RECONCILE_CONCURRENCY` | `4` | Maximum source history streams recovered concurrently |
+| `SCAMSHIELD_SOURCE_REFRESH_SECONDS` | `60` | Registry refresh cadence, independent of history recovery |
+| `SCAMSHIELD_CANDIDATE_VERIFY_SECONDS` | `300` | Public-candidate verification cadence |
+| `SCAMSHIELD_LIVE_WORKERS` | `8` | Workers draining the bounded live-update queue |
+| `SCAMSHIELD_LIVE_QUEUE_SIZE` | `1000` | Maximum live backlog before durable-history deferral |
 | `SCAMSHIELD_STORE_RAW_SAMPLES` | `0` | Opt in to storing 300-character raw IOC samples |
 | `SCAMSHIELD_PALIMPSEST_ROOT` | unset | Enable canonical pack + capsule bridge |
 | `SCAMSHIELD_PALIMPSEST_OUTBOX` | `var/scamshield-inbox` | Relative Palimpsest runtime outbox |

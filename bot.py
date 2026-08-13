@@ -24,6 +24,7 @@ Setup:
 Owner commands:
   /digest — dump the IOC table collected so far.
   /coverage — show measured collection coverage.
+  /monitor — show aggregate Telethon collector health and backlog.
   /funnel — show aggregate starts, unsupported inputs, and verdict feedback.
   /liquidity [YYYY-MM-DD] — show the reviewed UTC-day liquidity pulse.
   /review_amount ... — bind one explicit monetary review to a scanned message.
@@ -38,6 +39,7 @@ import logging
 import os
 import re
 import socket
+import time
 from pathlib import Path
 
 # This network blackholes IPv6 (see claude-telegram-bridge force_ipv4);
@@ -440,6 +442,99 @@ async def cmd_coverage(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+def _short_duration(seconds: int) -> str:
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, _ = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m"
+    hours, minutes = divmod(minutes, 60)
+    if hours < 48:
+        return f"{hours}h {minutes}m"
+    days, hours = divmod(hours, 24)
+    return f"{days}d {hours}h"
+
+
+def monitor_text(*, now: int | None = None) -> str:
+    state = STORE.monitor_state()
+    if state is None:
+        return (
+            "<b>Telegram monitor · no heartbeat</b>\n\n"
+            "The Telethon collector has not published runtime health yet. "
+            "Check the service before assuming configured sources are covered."
+        )
+    current = int(time.time()) if now is None else now
+    age = max(0, current - state["updated_at"])
+    uptime = max(0, current - state["started_at"])
+    reconcile_age = max(
+        0,
+        current - (state["last_reconcile_success_at"] or state["started_at"]),
+    )
+    candidate_age = max(
+        0,
+        current - (state["last_candidate_success_at"] or state["started_at"]),
+    )
+    maintenance_overdue = (
+        reconcile_age > state["reconcile_interval_seconds"]
+        or candidate_age > state["candidate_verify_interval_seconds"]
+    )
+    maintenance_failed = (
+        state["reconcile_failure_streak"] > 0
+        or state["candidate_failure_streak"] > 0
+    )
+    maintenance_starting = (
+        state["last_reconcile_success_at"] == 0
+        or state["last_candidate_success_at"] == 0
+    )
+    if age > 600:
+        condition = "OFFLINE OR STALLED"
+    elif age > 180:
+        condition = "STALE"
+    elif maintenance_failed:
+        condition = "DEGRADED"
+    elif maintenance_overdue:
+        condition = "MAINTENANCE STALE"
+    elif maintenance_starting:
+        condition = "STARTING"
+    else:
+        condition = "HEALTHY"
+    handled = state["live_completed"] + state["live_failed"]
+    reconcile_success = (
+        "not yet"
+        if state["last_reconcile_success_at"] == 0
+        else f"{_short_duration(reconcile_age)} ago"
+    )
+    candidate_success = (
+        "not yet"
+        if state["last_candidate_success_at"] == 0
+        else f"{_short_duration(candidate_age)} ago"
+    )
+    return (
+        f"<b>Telegram monitor · {condition}</b>\n\n"
+        f"Heartbeat: {_short_duration(age)} ago · uptime {_short_duration(uptime)}\n"
+        f"Sources: {state['resolved_sources']} resolved · "
+        f"{state['unresolved_sources']} unresolved\n"
+        f"Live since restart: {handled} handled · {state['live_failed']} failed\n"
+        f"Queue: {state['live_queue_depth']}/{state['live_queue_capacity']} · "
+        f"{state['live_deferred']} deferred to durable recovery\n"
+        f"Recovery: {reconcile_success} · {state['last_reconciled']} message(s) · "
+        f"failure streak {state['reconcile_failure_streak']}\n"
+        f"Candidates: {candidate_success} · "
+        f"{state['last_candidates_checked']} checked · "
+        f"failure streak {state['candidate_failure_streak']}\n\n"
+        "Aggregate operational data only; no source IDs or message contents."
+    )
+
+
+async def cmd_monitor(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    if (
+        update.effective_user.id != OWNER_ID
+        or update.effective_chat.type != "private"
+    ):
+        return
+    await update.message.reply_text(monitor_text(), parse_mode=ParseMode.HTML)
+
+
 async def cmd_liquidity(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_user.id != OWNER_ID:
         return
@@ -730,6 +825,7 @@ def main() -> None:
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("digest", cmd_digest))
     app.add_handler(CommandHandler("coverage", cmd_coverage))
+    app.add_handler(CommandHandler("monitor", cmd_monitor))
     app.add_handler(CommandHandler("liquidity", cmd_liquidity))
     app.add_handler(CommandHandler("review_amount", cmd_review_amount))
     app.add_handler(CommandHandler("funnel", cmd_funnel))

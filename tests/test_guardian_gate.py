@@ -429,11 +429,84 @@ class GuardianCopyMatchesBehaviour(unittest.TestCase):
         finally:
             mod.OWNER_ID = original_owner_id
 
+    def test_monitor_health_is_private_and_identity_free(self):
+        mod = _load_bot(None)
+        mod.STORE.record_monitor_state(
+            started_at=900,
+            resolved_sources=12,
+            unresolved_sources=1,
+            live_queue_depth=3,
+            live_queue_capacity=1000,
+            live_enqueued=20,
+            live_completed=15,
+            live_failed=1,
+            live_deferred=2,
+            reconcile_interval_seconds=300,
+            candidate_verify_interval_seconds=300,
+            last_reconciled=7,
+            last_reconcile_success_at=990,
+            reconcile_failure_streak=0,
+            last_candidates_checked=4,
+            last_candidate_success_at=995,
+            candidate_failure_streak=0,
+            now=1000,
+        )
+        rendered = mod.monitor_text(now=1010)
+        self.assertIn("HEALTHY", rendered)
+        self.assertIn("12 resolved", rendered)
+        self.assertIn("3/1000", rendered)
+        self.assertNotIn("telegram-user", rendered)
+
+        original_owner_id = mod.OWNER_ID
+        mod.OWNER_ID = 42
+        try:
+            group_message = self._message()
+            asyncio.run(mod.cmd_monitor(
+                types.SimpleNamespace(
+                    message=group_message,
+                    effective_user=types.SimpleNamespace(id=42),
+                    effective_chat=types.SimpleNamespace(type="group"),
+                ),
+                types.SimpleNamespace(),
+            ))
+            self.assertEqual(group_message.replies, [])
+        finally:
+            mod.OWNER_ID = original_owner_id
+
+    def test_monitor_health_exposes_stalled_maintenance(self):
+        mod = _load_bot(None)
+        mod.STORE.record_monitor_state(
+            started_at=500,
+            resolved_sources=12,
+            unresolved_sources=0,
+            live_queue_depth=0,
+            live_queue_capacity=1000,
+            live_enqueued=20,
+            live_completed=20,
+            live_failed=0,
+            live_deferred=0,
+            reconcile_interval_seconds=300,
+            candidate_verify_interval_seconds=300,
+            last_reconciled=0,
+            last_reconcile_success_at=600,
+            reconcile_failure_streak=0,
+            last_candidates_checked=0,
+            last_candidate_success_at=990,
+            candidate_failure_streak=0,
+            now=1000,
+        )
+
+        rendered = mod.monitor_text(now=1001)
+
+        self.assertIn("MAINTENANCE STALE", rendered)
+        self.assertIn("Recovery: 6m ago", rendered)
+
     def test_owner_liquidity_commands_are_registered(self):
         mod = _load_bot(None)
         callbacks = _registered_callbacks(mod)
         self.assertIn(mod.cmd_liquidity, callbacks)
         self.assertIn(mod.cmd_review_amount, callbacks)
+        self.assertIn(mod.cmd_monitor, callbacks)
 
     def test_public_guide_is_present_in_the_bot_keyboard(self):
         mod = _load_bot(None)

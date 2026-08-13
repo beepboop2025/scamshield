@@ -6,6 +6,19 @@
   "description": "Human-curated releases from ScamShield. This feed never contains private review-queue records, submitted messages, or exact IOC values.",
   "items": [
     {
+      "id": "scamshield.release.vigorous-telegram-monitor.v1",
+      "url": "https://github.com/beepboop2025/scamshield/blob/master/docs/TELEGRAM_MONITOR_V2.md",
+      "title": "ScamShield strengthens real-time Telegram monitoring and recovery",
+      "summary": "The configured-source monitor now uses a bounded live queue, parallel recovery across independent sources, immediate retry after graceful restarts, independent source-refresh and candidate-verification loops, and a private aggregate health view. Public-source expansion runs every 30 minutes but still requires Telegram verification and corroboration from at least two configured sources. The authorization boundary remains limited to public or explicitly operator-authorized Telegram sources.",
+      "date_published": "2026-08-13T09:41:34Z",
+      "date_modified": "2026-08-13T09:41:34Z",
+      "tags": ["release", "Telegram", "reliability", "monitoring", "privacy"],
+      "_scamshield": {
+        "status": "reviewed product update",
+        "disclosure": "Only aggregate operational behavior is described; no watched source identity, submitted message, Telegram identity, exact IOC value, or private review-queue record is included."
+      }
+    },
+    {
       "id": "scamshield.release.honest-input-feedback.v1",
       "url": "https://github.com/beepboop2025/scamshield/blob/master/README.md",
       "title": "ScamShield adds honest non-text handling and privacy-safe verdict feedback",

@@ -61,8 +61,13 @@ class TelegramSourceRegistryTests(unittest.TestCase):
             "SCAMSHIELD_INITIAL_HISTORY": "25",
             "SCAMSHIELD_BACKFILL_BATCH": "50",
             "SCAMSHIELD_RECONCILE_SECONDS": "60",
+            "SCAMSHIELD_RECONCILE_CONCURRENCY": "3",
+            "SCAMSHIELD_SOURCE_REFRESH_SECONDS": "45",
+            "SCAMSHIELD_CANDIDATE_VERIFY_SECONDS": "120",
             "SCAMSHIELD_CLAIM_LEASE_SECONDS": "120",
             "SCAMSHIELD_ANALYSIS_CONCURRENCY": "2",
+            "SCAMSHIELD_LIVE_WORKERS": "6",
+            "SCAMSHIELD_LIVE_QUEUE_SIZE": "256",
             "SCAMSHIELD_FLOOD_SLEEP_THRESHOLD": "30",
             "SCAMSHIELD_AUTO_JOIN_PUBLIC": "0",
             "SCAMSHIELD_DISCOVERY_VERIFY_ENABLED": "1",
@@ -74,10 +79,17 @@ class TelegramSourceRegistryTests(unittest.TestCase):
         })
         self.assertEqual(settings.initial_history, 25)
         self.assertFalse(settings.auto_join_public)
+        self.assertEqual(settings.max_reconcile_concurrency, 3)
+        self.assertEqual(settings.source_refresh_seconds, 45)
+        self.assertEqual(settings.candidate_verify_seconds, 120)
+        self.assertEqual(settings.live_worker_count, 6)
+        self.assertEqual(settings.live_queue_size, 256)
         self.assertEqual(settings.discovery_verify_batch, 7)
         self.assertEqual(settings.discovery_verify_min_sources, 2)
         with self.assertRaisesRegex(ValueError, "SCAMSHIELD_BACKFILL_BATCH"):
             MonitorSettings.from_environment({"SCAMSHIELD_BACKFILL_BATCH": "1001"})
+        with self.assertRaisesRegex(ValueError, "SCAMSHIELD_LIVE_QUEUE_SIZE"):
+            MonitorSettings.from_environment({"SCAMSHIELD_LIVE_QUEUE_SIZE": "99"})
 
     def test_operator_append_is_locked_normalized_and_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:

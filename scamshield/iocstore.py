@@ -171,6 +171,28 @@ CREATE TABLE IF NOT EXISTS assessment_feedback (
 
 CREATE INDEX IF NOT EXISTS assessment_feedback_summary
     ON assessment_feedback(original_tier, response);
+
+CREATE TABLE IF NOT EXISTS monitor_runtime (
+    component TEXT PRIMARY KEY,
+    updated_at INTEGER NOT NULL,
+    started_at INTEGER NOT NULL,
+    resolved_sources INTEGER NOT NULL,
+    unresolved_sources INTEGER NOT NULL,
+    live_queue_depth INTEGER NOT NULL,
+    live_queue_capacity INTEGER NOT NULL,
+    live_enqueued INTEGER NOT NULL,
+    live_completed INTEGER NOT NULL,
+    live_failed INTEGER NOT NULL,
+    live_deferred INTEGER NOT NULL,
+    reconcile_interval_seconds INTEGER NOT NULL,
+    candidate_verify_interval_seconds INTEGER NOT NULL,
+    last_reconciled INTEGER NOT NULL,
+    last_reconcile_success_at INTEGER NOT NULL,
+    reconcile_failure_streak INTEGER NOT NULL,
+    last_candidates_checked INTEGER NOT NULL,
+    last_candidate_success_at INTEGER NOT NULL,
+    candidate_failure_streak INTEGER NOT NULL
+);
 """
 
 _IOC_KIND = {
@@ -188,6 +210,16 @@ _EVENT_VALUE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _PRODUCT_EVENTS = {"start", "unsupported_input"}
 _FEEDBACK_TIERS = {"CLEAN", "WATCH", "LIKELY_SCAM", "CONFIRMED_PATTERN"}
 _FEEDBACK_RESPONSES = {"agree", "disagree", "unsure"}
+_MONITOR_RUNTIME_MIGRATIONS = (
+    "reconcile_interval_seconds",
+    "candidate_verify_interval_seconds",
+    "last_reconciled",
+    "last_reconcile_success_at",
+    "reconcile_failure_streak",
+    "last_candidates_checked",
+    "last_candidate_success_at",
+    "candidate_failure_streak",
+)
 
 
 def _parse_timestamp(value: str) -> datetime:
@@ -245,6 +277,27 @@ class IocStore:
         if not read_only:
             self.conn.execute("PRAGMA journal_mode = WAL")
             self.conn.executescript(_SCHEMA)
+            self._migrate_monitor_runtime()
+
+    def _migrate_monitor_runtime(self) -> None:
+        """Idempotently add aggregate health fields to earlier runtime tables."""
+
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            existing = {
+                str(row[1])
+                for row in self.conn.execute("PRAGMA table_info(monitor_runtime)")
+            }
+            for column in _MONITOR_RUNTIME_MIGRATIONS:
+                if column not in existing:
+                    self.conn.execute(
+                        f"ALTER TABLE monitor_runtime ADD COLUMN {column} "
+                        "INTEGER NOT NULL DEFAULT 0"
+                    )
+        except Exception:
+            self.conn.rollback()
+            raise
+        else:
             self.conn.commit()
 
     def record(self, iocs: dict[str, list[str]], sample: str = "") -> None:
@@ -1025,6 +1078,162 @@ class IocStore:
                ORDER BY original_tier, response""",
             (earliest_epoch,),
         ).fetchall()
+
+    def record_monitor_state(
+        self,
+        *,
+        started_at: int,
+        resolved_sources: int,
+        unresolved_sources: int,
+        live_queue_depth: int,
+        live_queue_capacity: int,
+        live_enqueued: int,
+        live_completed: int,
+        live_failed: int,
+        live_deferred: int,
+        reconcile_interval_seconds: int,
+        candidate_verify_interval_seconds: int,
+        last_reconciled: int,
+        last_reconcile_success_at: int,
+        reconcile_failure_streak: int,
+        last_candidates_checked: int,
+        last_candidate_success_at: int,
+        candidate_failure_streak: int,
+        now: int | None = None,
+    ) -> None:
+        """Publish aggregate monitor health without source or message identity."""
+
+        values = {
+            "started_at": started_at,
+            "resolved_sources": resolved_sources,
+            "unresolved_sources": unresolved_sources,
+            "live_queue_depth": live_queue_depth,
+            "live_queue_capacity": live_queue_capacity,
+            "live_enqueued": live_enqueued,
+            "live_completed": live_completed,
+            "live_failed": live_failed,
+            "live_deferred": live_deferred,
+            "reconcile_interval_seconds": reconcile_interval_seconds,
+            "candidate_verify_interval_seconds": candidate_verify_interval_seconds,
+            "last_reconciled": last_reconciled,
+            "last_reconcile_success_at": last_reconcile_success_at,
+            "reconcile_failure_streak": reconcile_failure_streak,
+            "last_candidates_checked": last_candidates_checked,
+            "last_candidate_success_at": last_candidate_success_at,
+            "candidate_failure_streak": candidate_failure_streak,
+        }
+        for name, value in values.items():
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a nonnegative integer")
+        if live_queue_capacity < 1:
+            raise ValueError("live_queue_capacity must be positive")
+        if reconcile_interval_seconds < 1 or candidate_verify_interval_seconds < 1:
+            raise ValueError("monitor intervals must be positive")
+        if live_queue_depth > live_queue_capacity:
+            raise ValueError("live_queue_depth cannot exceed capacity")
+        if live_completed + live_failed > live_enqueued:
+            raise ValueError("live outcomes cannot exceed enqueued messages")
+        timestamp = int(time.time()) if now is None else now
+        if isinstance(timestamp, bool) or not isinstance(timestamp, int) or timestamp < 0:
+            raise ValueError("now must be a nonnegative integer")
+        if started_at > timestamp:
+            raise ValueError("started_at cannot be later than now")
+        for name, value in (
+            ("last_reconcile_success_at", last_reconcile_success_at),
+            ("last_candidate_success_at", last_candidate_success_at),
+        ):
+            if value > timestamp:
+                raise ValueError(f"{name} cannot be later than now")
+            if value and value < started_at:
+                raise ValueError(f"{name} cannot be earlier than started_at")
+        with self.conn:
+            self.conn.execute(
+                """INSERT INTO monitor_runtime (
+                       component, updated_at, started_at, resolved_sources,
+                       unresolved_sources, live_queue_depth, live_queue_capacity,
+                       live_enqueued, live_completed, live_failed, live_deferred,
+                       reconcile_interval_seconds, candidate_verify_interval_seconds,
+                       last_reconciled, last_reconcile_success_at,
+                       reconcile_failure_streak, last_candidates_checked,
+                       last_candidate_success_at, candidate_failure_streak
+                   ) VALUES ('telegram', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(component) DO UPDATE SET
+                       updated_at = excluded.updated_at,
+                       started_at = excluded.started_at,
+                       resolved_sources = excluded.resolved_sources,
+                       unresolved_sources = excluded.unresolved_sources,
+                       live_queue_depth = excluded.live_queue_depth,
+                       live_queue_capacity = excluded.live_queue_capacity,
+                       live_enqueued = excluded.live_enqueued,
+                       live_completed = excluded.live_completed,
+                       live_failed = excluded.live_failed,
+                       live_deferred = excluded.live_deferred,
+                       reconcile_interval_seconds = excluded.reconcile_interval_seconds,
+                       candidate_verify_interval_seconds = excluded.candidate_verify_interval_seconds,
+                       last_reconciled = excluded.last_reconciled,
+                       last_reconcile_success_at = excluded.last_reconcile_success_at,
+                       reconcile_failure_streak = excluded.reconcile_failure_streak,
+                       last_candidates_checked = excluded.last_candidates_checked,
+                       last_candidate_success_at = excluded.last_candidate_success_at,
+                       candidate_failure_streak = excluded.candidate_failure_streak""",
+                (
+                    timestamp,
+                    started_at,
+                    resolved_sources,
+                    unresolved_sources,
+                    live_queue_depth,
+                    live_queue_capacity,
+                    live_enqueued,
+                    live_completed,
+                    live_failed,
+                    live_deferred,
+                    reconcile_interval_seconds,
+                    candidate_verify_interval_seconds,
+                    last_reconciled,
+                    last_reconcile_success_at,
+                    reconcile_failure_streak,
+                    last_candidates_checked,
+                    last_candidate_success_at,
+                    candidate_failure_streak,
+                ),
+            )
+
+    def monitor_state(self) -> dict[str, int] | None:
+        """Return the latest aggregate Telegram monitor heartbeat."""
+
+        row = self.conn.execute(
+            """SELECT updated_at, started_at, resolved_sources,
+                      unresolved_sources, live_queue_depth, live_queue_capacity,
+                      live_enqueued, live_completed, live_failed, live_deferred,
+                      reconcile_interval_seconds, candidate_verify_interval_seconds,
+                      last_reconciled, last_reconcile_success_at,
+                      reconcile_failure_streak, last_candidates_checked,
+                      last_candidate_success_at, candidate_failure_streak
+               FROM monitor_runtime WHERE component = 'telegram'"""
+        ).fetchone()
+        if row is None:
+            return None
+        keys = (
+            "updated_at",
+            "started_at",
+            "resolved_sources",
+            "unresolved_sources",
+            "live_queue_depth",
+            "live_queue_capacity",
+            "live_enqueued",
+            "live_completed",
+            "live_failed",
+            "live_deferred",
+            "reconcile_interval_seconds",
+            "candidate_verify_interval_seconds",
+            "last_reconciled",
+            "last_reconcile_success_at",
+            "reconcile_failure_streak",
+            "last_candidates_checked",
+            "last_candidate_success_at",
+            "candidate_failure_streak",
+        )
+        return {key: int(value) for key, value in zip(keys, row, strict=True)}
 
     def recent_assessments(self, limit: int = 100) -> list[dict]:
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:

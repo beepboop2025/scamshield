@@ -1,4 +1,6 @@
+import asyncio
 import tempfile
+import threading
 import unittest
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -38,6 +40,40 @@ class _Client:
         values.sort(key=lambda item: item.id, reverse=not reverse)
         for item in values[:limit]:
             yield item
+
+
+class _ConcurrentClient:
+    def __init__(self, *, fail_entity=None):
+        self.active = 0
+        self.max_active = 0
+        self.fail_entity = fail_entity
+
+    async def iter_messages(self, entity, *, limit, min_id=0, reverse=False):
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        try:
+            if entity == self.fail_entity:
+                raise RuntimeError("history unavailable")
+            await asyncio.sleep(0.02)
+            yield _Message(1, f"ordinary update from {entity}")
+        finally:
+            self.active -= 1
+
+
+class _BlockingAnalyzer:
+    def __init__(self, delegate):
+        self.delegate = delegate
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.done = threading.Event()
+
+    def analyze(self, text, *, collection):
+        try:
+            self.started.set()
+            self.release.wait(timeout=2)
+            return self.delegate.analyze(text, collection=collection)
+        finally:
+            self.done.set()
 
 
 class TelegramCollectorTests(unittest.IsolatedAsyncioTestCase):
@@ -129,6 +165,169 @@ class TelegramCollectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await collector.reconcile_source(self.source), 1)
         self.assertEqual(self.store.source_cursor(self.source_key), (True, 20))
         self.assertEqual(self.store.coverage_digest(), [])
+
+    async def test_independent_sources_reconcile_concurrently(self):
+        second_peer = "-1001234567891"
+        second_key = ObservationContext.create(
+            "",
+            surface="public_channel",
+            authorization="public",
+            raw_source=second_peer,
+            pseudonym_key=self.key,
+        ).source_pseudonym
+        second = ResolvedSource(
+            reference="@second_public_source",
+            reference_digest="b" * 24,
+            peer_id=second_peer,
+            source_key=second_key,
+            surface="public_channel",
+            authorization="public",
+            entity="second",
+        )
+        first = ResolvedSource(
+            reference=self.source.reference,
+            reference_digest=self.source.reference_digest,
+            peer_id=self.source.peer_id,
+            source_key=self.source.source_key,
+            surface=self.source.surface,
+            authorization=self.source.authorization,
+            entity="first",
+        )
+        self.store.register_collector_source(
+            second.source_key,
+            configured_ref_sha256=second.reference_digest,
+            surface=second.surface,
+            authorization=second.authorization,
+        )
+        client = _ConcurrentClient()
+        collector = TelegramCollector(
+            client=client,
+            store=self.store,
+            analyzer=self.analyzer,
+            settings=MonitorSettings(
+                initial_history=1,
+                max_reconcile_concurrency=2,
+            ),
+            pseudonym_key=self.key,
+        )
+
+        outcome = await collector.reconcile_sources((first, second))
+        self.assertEqual(outcome.processed, 2)
+        self.assertEqual(outcome.failed_sources, 0)
+        self.assertEqual(client.max_active, 2)
+
+        collector.client = _ConcurrentClient(fail_entity="second")
+        outcome = await collector.reconcile_sources((first, second))
+        self.assertEqual(outcome.processed, 1)
+        self.assertEqual(outcome.failed_sources, 1)
+
+    async def test_cancelled_live_analysis_is_immediately_retryable(self):
+        client = _Client([])
+        blocking = _BlockingAnalyzer(self.analyzer)
+        collector = TelegramCollector(
+            client=client,
+            store=self.store,
+            analyzer=blocking,
+            settings=MonitorSettings(),
+            pseudonym_key=self.key,
+        )
+        task = asyncio.create_task(collector.process_live(
+            self.source, _Message(30, "ordinary update 30"),
+        ))
+        self.assertTrue(await asyncio.to_thread(blocking.started.wait, 1))
+        task.cancel()
+        try:
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            status = self.store.conn.execute(
+                """SELECT status, error_code FROM telegram_messages
+                   WHERE source_key = ? AND message_id = 30""",
+                (self.source_key,),
+            ).fetchone()
+            self.assertEqual(status, ("RETRY", "CancelledError"))
+        finally:
+            blocking.release.set()
+            self.assertTrue(await asyncio.to_thread(blocking.done.wait, 1))
+
+    async def test_inflight_analysis_cannot_reactivate_a_removed_source(self):
+        client = _Client([])
+        blocking = _BlockingAnalyzer(self.analyzer)
+        collector = TelegramCollector(
+            client=client,
+            store=self.store,
+            analyzer=blocking,
+            settings=MonitorSettings(),
+            pseudonym_key=self.key,
+        )
+        task = asyncio.create_task(collector.process_live(
+            self.source, _Message(31, "ordinary update 31"),
+        ))
+        self.assertTrue(await asyncio.to_thread(blocking.started.wait, 1))
+        collector.deactivate_source(self.source_key)
+        self.store.register_collector_source(
+            self.source_key,
+            configured_ref_sha256=self.source.reference_digest,
+            surface=self.source.surface,
+            authorization=self.source.authorization,
+            status="REMOVED",
+        )
+        blocking.release.set()
+
+        outcome = await task
+        self.assertEqual(outcome.status, "REMOVED")
+        self.assertEqual(self.store.coverage_digest(), [])
+        receipt = self.store.conn.execute(
+            """SELECT tier FROM telegram_messages
+               WHERE source_key = ? AND message_id = 31""",
+            (self.source_key,),
+        ).fetchone()
+        self.assertEqual(receipt, ("SKIPPED_SOURCE_REMOVED",))
+        source_status = self.store.conn.execute(
+            "SELECT status FROM collector_sources WHERE source_key = ?",
+            (self.source_key,),
+        ).fetchone()
+        self.assertEqual(source_status, ("REMOVED",))
+
+    async def test_inflight_result_is_rejected_after_remove_and_reactivate(self):
+        client = _Client([])
+        blocking = _BlockingAnalyzer(self.analyzer)
+        collector = TelegramCollector(
+            client=client,
+            store=self.store,
+            analyzer=blocking,
+            settings=MonitorSettings(),
+            pseudonym_key=self.key,
+        )
+        task = asyncio.create_task(collector.process_live(
+            self.source, _Message(32, "ordinary update 32"),
+        ))
+        self.assertTrue(await asyncio.to_thread(blocking.started.wait, 1))
+        collector.deactivate_source(self.source_key)
+        self.store.register_collector_source(
+            self.source_key,
+            configured_ref_sha256=self.source.reference_digest,
+            surface=self.source.surface,
+            authorization=self.source.authorization,
+            status="REMOVED",
+        )
+        collector.activate_source(self.source_key)
+        self.store.register_collector_source(
+            self.source_key,
+            configured_ref_sha256=self.source.reference_digest,
+            surface=self.source.surface,
+            authorization=self.source.authorization,
+        )
+        blocking.release.set()
+
+        outcome = await task
+        self.assertEqual(outcome.status, "REMOVED")
+        self.assertEqual(self.store.coverage_digest(), [])
+        receipt = self.store.conn.execute(
+            """SELECT tier FROM telegram_messages
+               WHERE source_key = ? AND message_id = 32""",
+            (self.source_key,),
+        ).fetchone()
+        self.assertEqual(receipt, ("SKIPPED_SOURCE_REMOVED",))
 
 
 if __name__ == "__main__":

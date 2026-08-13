@@ -48,10 +48,17 @@ not require a new Telegram login or a code release.
 WATCH-or-higher posts can nominate public usernames. The monitor resolves a
 bounded batch only to verify entity type and public username; it does not join
 or read candidates at that stage. Once a handle has been seen in at least two
-distinct configured sources, an offline hourly policy job can append it to the
-registry. Each run is capped at five additions and the managed registry stops
-at 100 configured sources. The monitor then applies its normal public-channel
-collection path.
+distinct configured sources, an offline policy job running every 30 minutes can
+append it to the registry. Each run is capped at five additions and the managed
+registry stops at 100 configured sources. The monitor then applies its normal
+public-channel collection path.
+
+Live updates are handed to a bounded worker queue so Telegram's dispatcher does
+not wait on classification. Queue saturation defers work to the durable history
+cursor rather than dropping it or allowing unbounded memory growth. Recovery
+walks independent sources concurrently, while messages within one source remain
+ordered. Source refresh and public-candidate verification run independently of
+recovery, so one slow maintenance path does not stall the others.
 
 Review the queue or promote one manually with:
 
@@ -192,6 +199,11 @@ Configured-channel alerts include an opaque `Review ID` and may be reviewed by
 replying to the alert the same way. The SQLite schema migrates additively on
 service start; existing assessments and IOC history remain intact, while exact
 daily coverage begins at deployment.
+
+The private owner command `/monitor` shows the collector heartbeat, resolved
+and unresolved source totals, live queue depth, deferred recovery count, and
+the last history/candidate pass. It contains no Telegram source identifiers or
+message content.
 
 The review queue is not an automatic accusation feed. It excludes exact IOC
 values and message fragments and remains marked for human review.

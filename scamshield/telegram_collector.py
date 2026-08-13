@@ -33,6 +33,12 @@ class ProcessOutcome:
     text: str = ""
 
 
+@dataclass(frozen=True)
+class ReconcileOutcome:
+    processed: int = 0
+    failed_sources: int = 0
+
+
 def message_observed_at(message: Any) -> str:
     value = getattr(message, "date", None)
     if not isinstance(value, datetime):
@@ -68,16 +74,41 @@ class TelegramCollector:
         self.store_raw_samples = store_raw_samples
         self.log = logger or logging.getLogger("scamshield.telegram_collector")
         self._locks: dict[str, asyncio.Lock] = {}
+        self._history_locks: dict[str, asyncio.Lock] = {}
+        self._inactive_sources: set[str] = set()
+        self._source_generations: dict[str, int] = {}
         self._analysis_slots = asyncio.Semaphore(settings.max_analysis_concurrency)
 
     def _lock(self, source_key: str) -> asyncio.Lock:
         return self._locks.setdefault(source_key, asyncio.Lock())
+
+    def _history_lock(self, source_key: str) -> asyncio.Lock:
+        return self._history_locks.setdefault(source_key, asyncio.Lock())
+
+    def activate_source(self, source_key: str) -> None:
+        if source_key in self._inactive_sources:
+            self._inactive_sources.remove(source_key)
+            self._source_generations[source_key] = (
+                self._source_generations.get(source_key, 0) + 1
+            )
+        else:
+            self._source_generations.setdefault(source_key, 0)
+
+    def deactivate_source(self, source_key: str) -> None:
+        if source_key not in self._inactive_sources:
+            self._inactive_sources.add(source_key)
+            self._source_generations[source_key] = (
+                self._source_generations.get(source_key, 0) + 1
+            )
 
     async def process_live(self, source: ResolvedSource, message: Any) -> ProcessOutcome:
         async with self._lock(source.source_key):
             return await self._process(source, message)
 
     async def _process(self, source: ResolvedSource, message: Any) -> ProcessOutcome:
+        if source.source_key in self._inactive_sources:
+            return ProcessOutcome("REMOVED")
+        source_generation = self._source_generations.get(source.source_key, 0)
         message_id = getattr(message, "id", None)
         if isinstance(message_id, bool) or not isinstance(message_id, int) or message_id <= 0:
             self.log.warning("message without a usable ID from source %s", source.source_key)
@@ -126,6 +157,20 @@ class TelegramCollector:
                 result = await asyncio.to_thread(
                     self.analyzer.analyze, text, collection=context,
                 )
+            if (
+                source.source_key in self._inactive_sources
+                or self._source_generations.get(source.source_key, 0)
+                != source_generation
+            ):
+                # Source removal is an authorization boundary. Complete this
+                # receipt without storing the analysis that finished afterward.
+                self.store.complete_telegram_skip(
+                    source.source_key,
+                    message_id,
+                    reason="SKIPPED_SOURCE_REMOVED",
+                    observed_at=observed_at,
+                )
+                return ProcessOutcome("REMOVED")
             candidates: tuple[str, ...] = ()
             if TIER_RANK[result.overall_tier] >= TIER_RANK["WATCH"]:
                 candidates = tuple(
@@ -140,6 +185,18 @@ class TelegramCollector:
                 sample=text if self.store_raw_samples else "",
             )
             return ProcessOutcome("COMPLETE", result=result, text=text)
+        except asyncio.CancelledError:
+            # A graceful service restart should not leave a 15-minute lease
+            # behind. The durable history cursor can retry this immediately.
+            with suppress(Exception):
+                self.store.fail_telegram_message(
+                    source.source_key,
+                    message_id,
+                    surface=source.surface,
+                    observed_at=observed_at,
+                    error_code="CancelledError",
+                )
+            raise
         except Exception as exc:
             error_code = type(exc).__name__
             self.log.exception(
@@ -164,7 +221,7 @@ class TelegramCollector:
         """Fill one bounded history gap without letting live traffic skip it."""
 
         processed = 0
-        async with self._lock(source.source_key):
+        async with self._history_lock(source.source_key):
             initialized, cursor = self.store.source_cursor(source.source_key)
             if not initialized:
                 messages = [
@@ -192,25 +249,39 @@ class TelegramCollector:
 
             if hasattr(candidates, "__aiter__"):
                 async for message in candidates:
-                    outcome = await self._process(source, message)
+                    async with self._lock(source.source_key):
+                        outcome = await self._process(source, message)
+                        if outcome.status == "COMPLETE":
+                            self.store.advance_source_cursor(
+                                source.source_key, message.id,
+                            )
                     if outcome.status != "COMPLETE":
                         break
-                    self.store.advance_source_cursor(source.source_key, message.id)
                     processed += 1
             else:
                 for message in candidates:
-                    outcome = await self._process(source, message)
+                    async with self._lock(source.source_key):
+                        outcome = await self._process(source, message)
+                        if outcome.status == "COMPLETE":
+                            self.store.advance_source_cursor(
+                                source.source_key, message.id,
+                            )
                     if outcome.status != "COMPLETE":
                         break
-                    self.store.advance_source_cursor(source.source_key, message.id)
                     processed += 1
         return processed
 
-    async def reconcile_sources(self, sources: Iterable[ResolvedSource]) -> int:
-        total = 0
-        for source in sources:
+    async def reconcile_sources(
+        self, sources: Iterable[ResolvedSource],
+    ) -> ReconcileOutcome:
+        """Reconcile independent sources concurrently under a bounded gate."""
+
+        gate = asyncio.Semaphore(self.settings.max_reconcile_concurrency)
+
+        async def reconcile_one(source: ResolvedSource) -> tuple[int, int]:
             try:
-                total += await self.reconcile_source(source)
+                async with gate:
+                    return await self.reconcile_source(source), 0
             except Exception as exc:
                 # Preserve the original Telegram/reconciliation exception in
                 # logs even when the database is also temporarily unavailable.
@@ -223,11 +294,20 @@ class TelegramCollector:
                     source.source_key,
                     type(exc).__name__,
                 )
-        return total
+                return 0, 1
+
+        results = await asyncio.gather(
+            *(reconcile_one(source) for source in tuple(sources))
+        )
+        return ReconcileOutcome(
+            processed=sum(processed for processed, _ in results),
+            failed_sources=sum(failed for _, failed in results),
+        )
 
 
 __all__ = [
     "ProcessOutcome",
+    "ReconcileOutcome",
     "ResolvedSource",
     "TelegramCollector",
     "message_observed_at",

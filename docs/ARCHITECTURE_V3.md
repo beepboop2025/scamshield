@@ -176,6 +176,12 @@ pseudonymized sources. Scaling should add source-registry metadata, collector
 heartbeats, lag, language recall sets, and per-family precision/recall—not a
 marketing claim of total coverage.
 
+The vigorous monitor implementation is specified in
+[`TELEGRAM_MONITOR_V2.md`](TELEGRAM_MONITOR_V2.md). It adds bounded live
+backpressure, parallel recovery across independent sources, isolated maintenance
+loops, and an aggregate owner health view without widening the authorization
+boundary.
+
 The owner-only `/liquidity` view uses a separate UTC-day coverage ledger and
 operator-reviewed monetary observations. Message text is never converted into
 a monetary fact automatically. Reviews remain bound to the assessment hash and

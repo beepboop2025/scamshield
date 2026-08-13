@@ -165,8 +165,13 @@ class MonitorSettings:
     initial_history: int = 100
     backfill_batch: int = 250
     reconcile_seconds: int = 300
+    max_reconcile_concurrency: int = 4
+    source_refresh_seconds: int = 60
+    candidate_verify_seconds: int = 300
     claim_lease_seconds: int = 900
     max_analysis_concurrency: int = 4
+    live_worker_count: int = 8
+    live_queue_size: int = 1000
     flood_sleep_threshold: int = 60
     auto_join_public: bool = True
     discovery_verify_enabled: bool = True
@@ -197,11 +202,30 @@ class MonitorSettings:
             reconcile_seconds=_bounded_int(
                 env, "SCAMSHIELD_RECONCILE_SECONDS", 300, minimum=60, maximum=3600,
             ),
+            max_reconcile_concurrency=_bounded_int(
+                env, "SCAMSHIELD_RECONCILE_CONCURRENCY", 4,
+                minimum=1, maximum=16,
+            ),
+            source_refresh_seconds=_bounded_int(
+                env, "SCAMSHIELD_SOURCE_REFRESH_SECONDS", 60,
+                minimum=30, maximum=3600,
+            ),
+            candidate_verify_seconds=_bounded_int(
+                env, "SCAMSHIELD_CANDIDATE_VERIFY_SECONDS", 300,
+                minimum=60, maximum=3600,
+            ),
             claim_lease_seconds=_bounded_int(
                 env, "SCAMSHIELD_CLAIM_LEASE_SECONDS", 900, minimum=60, maximum=86400,
             ),
             max_analysis_concurrency=_bounded_int(
                 env, "SCAMSHIELD_ANALYSIS_CONCURRENCY", 4, minimum=1, maximum=16,
+            ),
+            live_worker_count=_bounded_int(
+                env, "SCAMSHIELD_LIVE_WORKERS", 8, minimum=1, maximum=32,
+            ),
+            live_queue_size=_bounded_int(
+                env, "SCAMSHIELD_LIVE_QUEUE_SIZE", 1000,
+                minimum=100, maximum=10_000,
             ),
             flood_sleep_threshold=_bounded_int(
                 env, "SCAMSHIELD_FLOOD_SLEEP_THRESHOLD", 60, minimum=0, maximum=86400,
