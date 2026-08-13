@@ -1,3 +1,4 @@
+import sqlite3
 import tempfile
 import unittest
 from datetime import date, datetime, timezone
@@ -140,6 +141,79 @@ class TestIocStore(unittest.TestCase):
                 candidate_failure_streak=0,
                 now=1000,
             )
+
+    def test_monitor_runtime_schema_migrates_idempotently(self):
+        legacy_path = Path(self.temp.name) / "legacy-monitor.db"
+        with sqlite3.connect(legacy_path) as connection:
+            connection.execute(
+                """CREATE TABLE monitor_runtime (
+                       component TEXT PRIMARY KEY,
+                       updated_at INTEGER NOT NULL,
+                       started_at INTEGER NOT NULL,
+                       resolved_sources INTEGER NOT NULL,
+                       unresolved_sources INTEGER NOT NULL,
+                       live_queue_depth INTEGER NOT NULL,
+                       live_queue_capacity INTEGER NOT NULL,
+                       live_enqueued INTEGER NOT NULL,
+                       live_completed INTEGER NOT NULL,
+                       live_failed INTEGER NOT NULL,
+                       live_deferred INTEGER NOT NULL
+                   )"""
+            )
+            connection.execute(
+                """INSERT INTO monitor_runtime VALUES (
+                       'telegram', 1000, 900, 3, 1, 0, 1000, 5, 5, 0, 0
+                   )"""
+            )
+
+        migrated = IocStore(legacy_path)
+        try:
+            expected_columns = {
+                "reconcile_interval_seconds",
+                "candidate_verify_interval_seconds",
+                "last_reconciled",
+                "last_reconcile_success_at",
+                "reconcile_failure_streak",
+                "last_candidates_checked",
+                "last_candidate_success_at",
+                "candidate_failure_streak",
+            }
+            columns = {
+                row[1]
+                for row in migrated.conn.execute(
+                    "PRAGMA table_info(monitor_runtime)"
+                )
+            }
+            self.assertTrue(expected_columns.issubset(columns))
+            self.assertEqual(migrated.monitor_state()["last_reconciled"], 0)
+            migrated.record_monitor_state(
+                started_at=900,
+                resolved_sources=4,
+                unresolved_sources=0,
+                live_queue_depth=0,
+                live_queue_capacity=1000,
+                live_enqueued=6,
+                live_completed=6,
+                live_failed=0,
+                live_deferred=0,
+                reconcile_interval_seconds=300,
+                candidate_verify_interval_seconds=300,
+                last_reconciled=1,
+                last_reconcile_success_at=1090,
+                reconcile_failure_streak=0,
+                last_candidates_checked=1,
+                last_candidate_success_at=1095,
+                candidate_failure_streak=0,
+                now=1100,
+            )
+        finally:
+            migrated.close()
+
+        reopened = IocStore(legacy_path)
+        try:
+            self.assertEqual(reopened.monitor_state()["resolved_sources"], 4)
+        finally:
+            reopened.close()
 
     def test_feedback_is_one_privacy_safe_choice_per_assessment(self):
         digest_now = datetime(2026, 8, 13, 12, tzinfo=timezone.utc)

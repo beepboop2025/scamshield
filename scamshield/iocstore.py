@@ -210,6 +210,16 @@ _EVENT_VALUE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _PRODUCT_EVENTS = {"start", "unsupported_input"}
 _FEEDBACK_TIERS = {"CLEAN", "WATCH", "LIKELY_SCAM", "CONFIRMED_PATTERN"}
 _FEEDBACK_RESPONSES = {"agree", "disagree", "unsure"}
+_MONITOR_RUNTIME_MIGRATIONS = (
+    "reconcile_interval_seconds",
+    "candidate_verify_interval_seconds",
+    "last_reconciled",
+    "last_reconcile_success_at",
+    "reconcile_failure_streak",
+    "last_candidates_checked",
+    "last_candidate_success_at",
+    "candidate_failure_streak",
+)
 
 
 def _parse_timestamp(value: str) -> datetime:
@@ -267,6 +277,27 @@ class IocStore:
         if not read_only:
             self.conn.execute("PRAGMA journal_mode = WAL")
             self.conn.executescript(_SCHEMA)
+            self._migrate_monitor_runtime()
+
+    def _migrate_monitor_runtime(self) -> None:
+        """Idempotently add aggregate health fields to earlier runtime tables."""
+
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            existing = {
+                str(row[1])
+                for row in self.conn.execute("PRAGMA table_info(monitor_runtime)")
+            }
+            for column in _MONITOR_RUNTIME_MIGRATIONS:
+                if column not in existing:
+                    self.conn.execute(
+                        f"ALTER TABLE monitor_runtime ADD COLUMN {column} "
+                        "INTEGER NOT NULL DEFAULT 0"
+                    )
+        except Exception:
+            self.conn.rollback()
+            raise
+        else:
             self.conn.commit()
 
     def record(self, iocs: dict[str, list[str]], sample: str = "") -> None:
