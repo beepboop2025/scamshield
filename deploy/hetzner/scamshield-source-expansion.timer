@@ -1,11 +1,11 @@
 [Unit]
-Description=Evaluate verified ScamShield public-source candidates hourly
+Description=Evaluate verified ScamShield public-source candidates every 30 minutes
 
 [Timer]
 OnBootSec=10min
-OnUnitActiveSec=1h
+OnUnitActiveSec=30min
 Persistent=true
-RandomizedDelaySec=5min
+RandomizedDelaySec=2min
 
 [Install]
 WantedBy=timers.target

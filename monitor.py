@@ -47,9 +47,6 @@ log = logging.getLogger("scamshield.monitor")
 
 SESSION = session_base_path()
 CHANNELS_FILE = channels_file_path()
-STORE = IocStore(os.environ.get("SCAMSHIELD_DB", "scamshield.db"))
-ANALYZER = AnalysisService.from_environment()
-STORE_RAW_SAMPLES = os.environ.get("SCAMSHIELD_STORE_RAW_SAMPLES", "0") == "1"
 
 
 def alert_owner(text: str) -> None:
@@ -87,6 +84,16 @@ class MonitorRuntime:
         self.failed_references: set[str] = set()
         self._handler = self._handle_message
         self._event_builder = None
+        self.live_queue: asyncio.Queue[tuple[ResolvedSource, object]] = asyncio.Queue(
+            maxsize=settings.live_queue_size
+        )
+        self.started_at = int(time.time())
+        self.live_enqueued = 0
+        self.live_completed = 0
+        self.live_failed = 0
+        self.live_deferred = 0
+        self.last_reconciled = 0
+        self.last_candidates_checked = 0
 
     @property
     def sources(self) -> tuple[ResolvedSource, ...]:
@@ -128,6 +135,7 @@ class MonitorRuntime:
             authorization=authorization,
             entity=entity,
         )
+        self.collector.activate_source(source.source_key)
         if is_public and self.settings.auto_join_public:
             try:
                 await self.client(JoinChannelRequest(entity))
@@ -141,14 +149,14 @@ class MonitorRuntime:
                     source.reference_digest,
                     type(exc).__name__,
                 )
-        STORE.register_collector_source(
+        self.collector.store.register_collector_source(
             source.source_key,
             configured_ref_sha256=source.reference_digest,
             surface=source.surface,
             authorization=source.authorization,
         )
         with suppress(Exception):
-            STORE.set_source_candidate_status(reference, "APPROVED")
+            self.collector.store.set_source_candidate_status(reference, "APPROVED")
         return source
 
     async def refresh_sources(self) -> None:
@@ -162,13 +170,18 @@ class MonitorRuntime:
             if reference in desired:
                 continue
             removed = self.sources_by_reference.pop(reference)
-            STORE.register_collector_source(
-                removed.source_key,
-                configured_ref_sha256=removed.reference_digest,
-                surface=removed.surface,
-                authorization=removed.authorization,
-                status="REMOVED",
-            )
+            if not any(
+                source.source_key == removed.source_key
+                for source in self.sources_by_reference.values()
+            ):
+                self.collector.deactivate_source(removed.source_key)
+                self.collector.store.register_collector_source(
+                    removed.source_key,
+                    configured_ref_sha256=removed.reference_digest,
+                    surface=removed.surface,
+                    authorization=removed.authorization,
+                    status="REMOVED",
+                )
 
         for reference in registry.references:
             if reference in self.sources_by_reference:
@@ -189,7 +202,9 @@ class MonitorRuntime:
                         raw_source=f"configured:{source_reference_digest(reference)}",
                         pseudonym_key=self.pseudonym_key,
                     )
-                    STORE.record_collection_error(surface, unresolved.source_pseudonym)
+                    self.collector.store.record_collection_error(
+                        surface, unresolved.source_pseudonym,
+                    )
                     log.warning(
                         "cannot resolve configured source %s (%s)",
                         source_reference_digest(reference),
@@ -211,7 +226,7 @@ class MonitorRuntime:
             by_peer.setdefault(source.peer_id, source)
         self.sources_by_peer = by_peer
         for source in self.sources_by_peer.values():
-            STORE.register_collector_source(
+            self.collector.store.register_collector_source(
                 source.source_key,
                 configured_ref_sha256=source.reference_digest,
                 surface=source.surface,
@@ -227,7 +242,7 @@ class MonitorRuntime:
 
         if not self.settings.discovery_verify_enabled:
             return 0
-        candidates = STORE.source_candidates_for_verification(
+        candidates = self.collector.store.source_candidates_for_verification(
             min_hits=self.settings.discovery_verify_min_hits,
             min_sources=self.settings.discovery_verify_min_sources,
             limit=self.settings.discovery_verify_batch,
@@ -271,7 +286,7 @@ class MonitorRuntime:
                     source_reference_digest(candidate),
                     error_code,
                 )
-            STORE.record_source_candidate_verification(
+            self.collector.store.record_source_candidate_verification(
                 candidate,
                 status,
                 entity_kind=entity_kind,
@@ -295,11 +310,74 @@ class MonitorRuntime:
             )
             self.client.add_event_handler(self._handler, self._event_builder)
 
+    def status_text(self) -> str:
+        """Return a bounded, identity-free operational summary."""
+
+        return (
+            f"connected; sources={len(self.sources)}; "
+            f"unresolved={len(self.failed_references)}; "
+            f"live_queue={self.live_queue.qsize()}/{self.live_queue.maxsize}; "
+            f"live_done={self.live_completed}; live_failed={self.live_failed}; "
+            f"deferred={self.live_deferred}; reconciled={self.last_reconciled}; "
+            f"candidates_checked={self.last_candidates_checked}"
+        )
+
+    def publish_status(self, *, ready: bool = False, watchdog: bool = False) -> None:
+        """Publish aggregate health to SQLite and systemd."""
+
+        try:
+            self.collector.store.record_monitor_state(
+                started_at=self.started_at,
+                resolved_sources=len(self.sources),
+                unresolved_sources=len(self.failed_references),
+                live_queue_depth=self.live_queue.qsize(),
+                live_queue_capacity=self.live_queue.maxsize,
+                live_enqueued=self.live_enqueued,
+                live_completed=self.live_completed,
+                live_failed=self.live_failed,
+                live_deferred=self.live_deferred,
+                last_reconciled=self.last_reconciled,
+                last_candidates_checked=self.last_candidates_checked,
+            )
+        except Exception as exc:
+            log.warning("monitor heartbeat storage failed (%s)", type(exc).__name__)
+        notifications = []
+        if ready:
+            notifications.append("READY=1")
+        if watchdog:
+            notifications.append("WATCHDOG=1")
+        notifications.append(f"STATUS={self.status_text()}")
+        notify_systemd("\n".join(notifications))
+
     async def _handle_message(self, event) -> None:
         source = self.sources_by_peer.get(str(event.chat_id))
         if source is None:
             return
-        outcome = await self.collector.process_live(source, event.message)
+        try:
+            self.live_queue.put_nowait((source, event))
+            self.live_enqueued += 1
+        except asyncio.QueueFull:
+            # Do not block Telethon's update dispatcher. This event remains
+            # unclaimed, so the durable history sweep will recover it.
+            self.live_deferred += 1
+            if self.live_deferred == 1 or self.live_deferred % 100 == 0:
+                log.warning(
+                    "live queue saturated; %d message(s) deferred to history recovery",
+                    self.live_deferred,
+                )
+
+    async def _process_live_event(self, source: ResolvedSource, event) -> None:
+        try:
+            outcome = await self.collector.process_live(source, event.message)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.live_failed += 1
+            raise
+        if outcome.status == "COMPLETE":
+            self.live_completed += 1
+        elif outcome.status == "FAILED":
+            self.live_failed += 1
         result = outcome.result
         if result is None or result.overall_tier not in {
             "LIKELY_SCAM", "CONFIRMED_PATTERN",
@@ -326,35 +404,77 @@ class MonitorRuntime:
             result.overall_score,
         )
 
+    async def live_worker(self, worker_number: int) -> None:
+        """Drain the bounded live queue without blocking Telethon dispatch."""
 
-async def maintenance_loop(runtime: MonitorRuntime) -> None:
+        while True:
+            source, event = await self.live_queue.get()
+            try:
+                await self._process_live_event(source, event)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.exception(
+                    "live worker %d failed for source %s (%s)",
+                    worker_number,
+                    source.source_key,
+                    type(exc).__name__,
+                )
+            finally:
+                self.live_queue.task_done()
+
+    def start_live_workers(self) -> list[asyncio.Task]:
+        return [
+            asyncio.create_task(
+                self.live_worker(index + 1),
+                name=f"monitor-live-{index + 1}",
+            )
+            for index in range(self.settings.live_worker_count)
+        ]
+
+
+async def reconciliation_loop(runtime: MonitorRuntime) -> None:
     while True:
         try:
             processed = await runtime.collector.reconcile_sources(runtime.sources)
-            verified = await runtime.verify_discovery_candidates()
-            notify_systemd(
-                "STATUS=connected; "
-                f"sources={len(runtime.sources)}; reconciled={processed}; "
-                f"candidates_checked={verified}"
-            )
+            runtime.last_reconciled = processed
+            runtime.publish_status()
         except Exception as exc:
-            log.exception("monitor maintenance failed (%s)", type(exc).__name__)
+            log.exception("history reconciliation failed (%s)", type(exc).__name__)
             with suppress(OSError):
-                notify_systemd(f"STATUS=degraded; maintenance={type(exc).__name__}")
+                notify_systemd(f"STATUS=degraded; reconciliation={type(exc).__name__}")
         await asyncio.sleep(runtime.settings.reconcile_seconds)
+
+
+async def source_refresh_loop(runtime: MonitorRuntime) -> None:
+    while True:
+        await asyncio.sleep(runtime.settings.source_refresh_seconds)
         try:
             await runtime.refresh_sources()
+            runtime.publish_status()
         except Exception as exc:
             log.exception("source refresh failed (%s)", type(exc).__name__)
 
 
-async def watchdog_loop() -> None:
+async def candidate_verification_loop(runtime: MonitorRuntime) -> None:
+    while True:
+        try:
+            runtime.last_candidates_checked = (
+                await runtime.verify_discovery_candidates()
+            )
+            runtime.publish_status()
+        except Exception as exc:
+            log.exception("candidate verification failed (%s)", type(exc).__name__)
+        await asyncio.sleep(runtime.settings.candidate_verify_seconds)
+
+
+async def watchdog_loop(runtime: MonitorRuntime) -> None:
     interval = watchdog_interval()
     if interval is None:
         return
     while True:
         await asyncio.sleep(interval)
-        notify_systemd("WATCHDOG=1")
+        runtime.publish_status(watchdog=True)
 
 
 async def main() -> None:
@@ -370,6 +490,9 @@ async def main() -> None:
         settings = MonitorSettings.from_environment()
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+    store = IocStore(os.environ.get("SCAMSHIELD_DB", "scamshield.db"))
+    analyzer = AnalysisService.from_environment()
+    store_raw_samples = os.environ.get("SCAMSHIELD_STORE_RAW_SAMPLES", "0") == "1"
 
     client = TelegramClient(
         str(SESSION),
@@ -383,11 +506,11 @@ async def main() -> None:
     )
     collector = TelegramCollector(
         client=client,
-        store=STORE,
-        analyzer=ANALYZER,
+        store=store,
+        analyzer=analyzer,
         settings=settings,
         pseudonym_key=pseudonym_key,
-        store_raw_samples=STORE_RAW_SAMPLES,
+        store_raw_samples=store_raw_samples,
         logger=log,
     )
     runtime = MonitorRuntime(
@@ -407,14 +530,24 @@ async def main() -> None:
         await runtime.refresh_sources()
         # Telethon explicitly requires handlers to be registered before this
         # call, otherwise missed updates are fetched but not processed.
+        tasks = runtime.start_live_workers()
         await client.catch_up()
-        notify_systemd(
-            f"READY=1\nSTATUS=connected; sources={len(runtime.sources)}; reconciling"
-        )
-        tasks = [
-            asyncio.create_task(maintenance_loop(runtime), name="monitor-maintenance"),
-            asyncio.create_task(watchdog_loop(), name="systemd-watchdog"),
-        ]
+        runtime.publish_status(ready=True)
+        tasks.extend([
+            asyncio.create_task(
+                reconciliation_loop(runtime), name="monitor-reconciliation",
+            ),
+            asyncio.create_task(
+                source_refresh_loop(runtime), name="monitor-source-refresh",
+            ),
+            asyncio.create_task(
+                candidate_verification_loop(runtime),
+                name="monitor-candidate-verification",
+            ),
+            asyncio.create_task(
+                watchdog_loop(runtime), name="systemd-watchdog",
+            ),
+        ])
         log.info("monitor ready on %d configured source(s)", len(runtime.sources))
         await client.run_until_disconnected()
     finally:
@@ -426,7 +559,7 @@ async def main() -> None:
             await asyncio.gather(*tasks, return_exceptions=True)
         if client.is_connected():
             await client.disconnect()
-        STORE.close()
+        store.close()
 
 
 if __name__ == "__main__":

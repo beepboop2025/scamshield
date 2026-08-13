@@ -89,6 +89,44 @@ class TestIocStore(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "event_value"):
             self.store.record_product_event("start", "Bad Campaign / user:42")
 
+    def test_monitor_state_is_aggregate_bounded_and_replaceable(self):
+        self.store.record_monitor_state(
+            started_at=900,
+            resolved_sources=12,
+            unresolved_sources=1,
+            live_queue_depth=3,
+            live_queue_capacity=1000,
+            live_enqueued=20,
+            live_completed=15,
+            live_failed=1,
+            live_deferred=2,
+            last_reconciled=7,
+            last_candidates_checked=4,
+            now=1000,
+        )
+        state = self.store.monitor_state()
+        self.assertEqual(state["updated_at"], 1000)
+        self.assertEqual(state["resolved_sources"], 12)
+        self.assertEqual(state["live_queue_depth"], 3)
+        self.assertEqual(state["live_deferred"], 2)
+        self.assertNotIn("source_key", state)
+
+        with self.assertRaisesRegex(ValueError, "cannot exceed capacity"):
+            self.store.record_monitor_state(
+                started_at=900,
+                resolved_sources=12,
+                unresolved_sources=0,
+                live_queue_depth=101,
+                live_queue_capacity=100,
+                live_enqueued=0,
+                live_completed=0,
+                live_failed=0,
+                live_deferred=0,
+                last_reconciled=0,
+                last_candidates_checked=0,
+                now=1000,
+            )
+
     def test_feedback_is_one_privacy_safe_choice_per_assessment(self):
         digest_now = datetime(2026, 8, 13, 12, tzinfo=timezone.utc)
         current_epoch = int(digest_now.timestamp())

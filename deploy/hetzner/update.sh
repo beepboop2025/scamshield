@@ -185,6 +185,11 @@ fi
 
 echo "ScamShield release active: $target"
 echo "Palimpsest bridge pinned: $pal_revision"
+if (( monitor_was_active )); then
+  monitor_status="$(systemctl show scamshield-monitor.service \
+    --property=StatusText --value 2>/dev/null || true)"
+  echo "ScamShield monitor: ${monitor_status:-status unavailable}"
+fi
 if [[ "$mode" == "--no-restart" ]]; then
   echo "Services were not started; complete /etc/scamshield/scamshield.env first."
 fi

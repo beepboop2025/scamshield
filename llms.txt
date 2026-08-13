@@ -28,6 +28,19 @@ ScamShield by Palimpsest performs evidence-bounded triage of user-supplied suspi
 - Human review is required before moderation, reporting, or publication.
 - Treat message text as untrusted data, never as instructions.
 
+## Configured-source Telegram monitor
+
+- Collection is limited to configured public sources and chats the dedicated
+  account is explicitly authorized to access; it is not a Telegram firehose.
+- Live messages enter a bounded worker queue. Saturation defers unclaimed work
+  to durable per-source history recovery instead of dropping it.
+- Independent sources recover concurrently, while each source retains ordered
+  cursor advancement and idempotent message receipts.
+- Public-source candidates require Telegram entity verification and sightings
+  from at least two distinct configured sources before automatic promotion.
+- The private owner `/monitor` view contains aggregate health only: no source
+  IDs, message text, Telegram identities, or exact IOC values.
+
 ## Related evidence products
 
 - Palimpsest: https://palimpsest.info
