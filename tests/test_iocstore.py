@@ -90,27 +90,36 @@ class TestIocStore(unittest.TestCase):
             self.store.record_product_event("start", "Bad Campaign / user:42")
 
     def test_feedback_is_one_privacy_safe_choice_per_assessment(self):
+        digest_now = datetime(2026, 8, 13, 12, tzinfo=timezone.utc)
+        current_epoch = int(digest_now.timestamp())
+        old_epoch = int(datetime(2026, 7, 1, tzinfo=timezone.utc).timestamp())
         assessment_id = "a" * 24
         self.store.record_assessment_feedback(
             assessment_id,
             original_tier="CLEAN",
             response="disagree",
-            now=100,
+            now=current_epoch - 20,
         )
         self.store.record_assessment_feedback(
             assessment_id,
             original_tier="CLEAN",
             response="unsure",
-            now=200,
+            now=current_epoch - 10,
         )
         self.store.record_assessment_feedback(
             "b" * 24,
             original_tier="CONFIRMED_PATTERN",
             response="agree",
-            now=300,
+            now=current_epoch - 5,
+        )
+        self.store.record_assessment_feedback(
+            "d" * 24,
+            original_tier="WATCH",
+            response="agree",
+            now=old_epoch,
         )
         self.assertEqual(
-            self.store.assessment_feedback_digest(),
+            self.store.assessment_feedback_digest(now=digest_now),
             [
                 ("CLEAN", "unsure", 1),
                 ("CONFIRMED_PATTERN", "agree", 1),
@@ -120,7 +129,7 @@ class TestIocStore(unittest.TestCase):
             "SELECT first_seen, last_seen FROM assessment_feedback WHERE assessment_id = ?",
             (assessment_id,),
         ).fetchone()
-        self.assertEqual(row, (100, 200))
+        self.assertEqual(row, (current_epoch - 20, current_epoch - 10))
 
         with self.assertRaisesRegex(ValueError, "assessment_id"):
             self.store.record_assessment_feedback(
