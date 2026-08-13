@@ -184,8 +184,14 @@ CREATE TABLE IF NOT EXISTS monitor_runtime (
     live_completed INTEGER NOT NULL,
     live_failed INTEGER NOT NULL,
     live_deferred INTEGER NOT NULL,
+    reconcile_interval_seconds INTEGER NOT NULL,
+    candidate_verify_interval_seconds INTEGER NOT NULL,
     last_reconciled INTEGER NOT NULL,
-    last_candidates_checked INTEGER NOT NULL
+    last_reconcile_success_at INTEGER NOT NULL,
+    reconcile_failure_streak INTEGER NOT NULL,
+    last_candidates_checked INTEGER NOT NULL,
+    last_candidate_success_at INTEGER NOT NULL,
+    candidate_failure_streak INTEGER NOT NULL
 );
 """
 
@@ -1054,8 +1060,14 @@ class IocStore:
         live_completed: int,
         live_failed: int,
         live_deferred: int,
+        reconcile_interval_seconds: int,
+        candidate_verify_interval_seconds: int,
         last_reconciled: int,
+        last_reconcile_success_at: int,
+        reconcile_failure_streak: int,
         last_candidates_checked: int,
+        last_candidate_success_at: int,
+        candidate_failure_streak: int,
         now: int | None = None,
     ) -> None:
         """Publish aggregate monitor health without source or message identity."""
@@ -1070,14 +1082,22 @@ class IocStore:
             "live_completed": live_completed,
             "live_failed": live_failed,
             "live_deferred": live_deferred,
+            "reconcile_interval_seconds": reconcile_interval_seconds,
+            "candidate_verify_interval_seconds": candidate_verify_interval_seconds,
             "last_reconciled": last_reconciled,
+            "last_reconcile_success_at": last_reconcile_success_at,
+            "reconcile_failure_streak": reconcile_failure_streak,
             "last_candidates_checked": last_candidates_checked,
+            "last_candidate_success_at": last_candidate_success_at,
+            "candidate_failure_streak": candidate_failure_streak,
         }
         for name, value in values.items():
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError(f"{name} must be a nonnegative integer")
         if live_queue_capacity < 1:
             raise ValueError("live_queue_capacity must be positive")
+        if reconcile_interval_seconds < 1 or candidate_verify_interval_seconds < 1:
+            raise ValueError("monitor intervals must be positive")
         if live_queue_depth > live_queue_capacity:
             raise ValueError("live_queue_depth cannot exceed capacity")
         if live_completed + live_failed > live_enqueued:
@@ -1087,14 +1107,25 @@ class IocStore:
             raise ValueError("now must be a nonnegative integer")
         if started_at > timestamp:
             raise ValueError("started_at cannot be later than now")
+        for name, value in (
+            ("last_reconcile_success_at", last_reconcile_success_at),
+            ("last_candidate_success_at", last_candidate_success_at),
+        ):
+            if value > timestamp:
+                raise ValueError(f"{name} cannot be later than now")
+            if value and value < started_at:
+                raise ValueError(f"{name} cannot be earlier than started_at")
         with self.conn:
             self.conn.execute(
                 """INSERT INTO monitor_runtime (
                        component, updated_at, started_at, resolved_sources,
                        unresolved_sources, live_queue_depth, live_queue_capacity,
                        live_enqueued, live_completed, live_failed, live_deferred,
-                       last_reconciled, last_candidates_checked
-                   ) VALUES ('telegram', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       reconcile_interval_seconds, candidate_verify_interval_seconds,
+                       last_reconciled, last_reconcile_success_at,
+                       reconcile_failure_streak, last_candidates_checked,
+                       last_candidate_success_at, candidate_failure_streak
+                   ) VALUES ('telegram', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(component) DO UPDATE SET
                        updated_at = excluded.updated_at,
                        started_at = excluded.started_at,
@@ -1106,8 +1137,14 @@ class IocStore:
                        live_completed = excluded.live_completed,
                        live_failed = excluded.live_failed,
                        live_deferred = excluded.live_deferred,
+                       reconcile_interval_seconds = excluded.reconcile_interval_seconds,
+                       candidate_verify_interval_seconds = excluded.candidate_verify_interval_seconds,
                        last_reconciled = excluded.last_reconciled,
-                       last_candidates_checked = excluded.last_candidates_checked""",
+                       last_reconcile_success_at = excluded.last_reconcile_success_at,
+                       reconcile_failure_streak = excluded.reconcile_failure_streak,
+                       last_candidates_checked = excluded.last_candidates_checked,
+                       last_candidate_success_at = excluded.last_candidate_success_at,
+                       candidate_failure_streak = excluded.candidate_failure_streak""",
                 (
                     timestamp,
                     started_at,
@@ -1119,8 +1156,14 @@ class IocStore:
                     live_completed,
                     live_failed,
                     live_deferred,
+                    reconcile_interval_seconds,
+                    candidate_verify_interval_seconds,
                     last_reconciled,
+                    last_reconcile_success_at,
+                    reconcile_failure_streak,
                     last_candidates_checked,
+                    last_candidate_success_at,
+                    candidate_failure_streak,
                 ),
             )
 
@@ -1131,7 +1174,10 @@ class IocStore:
             """SELECT updated_at, started_at, resolved_sources,
                       unresolved_sources, live_queue_depth, live_queue_capacity,
                       live_enqueued, live_completed, live_failed, live_deferred,
-                      last_reconciled, last_candidates_checked
+                      reconcile_interval_seconds, candidate_verify_interval_seconds,
+                      last_reconciled, last_reconcile_success_at,
+                      reconcile_failure_streak, last_candidates_checked,
+                      last_candidate_success_at, candidate_failure_streak
                FROM monitor_runtime WHERE component = 'telegram'"""
         ).fetchone()
         if row is None:
@@ -1147,8 +1193,14 @@ class IocStore:
             "live_completed",
             "live_failed",
             "live_deferred",
+            "reconcile_interval_seconds",
+            "candidate_verify_interval_seconds",
             "last_reconciled",
+            "last_reconcile_success_at",
+            "reconcile_failure_streak",
             "last_candidates_checked",
+            "last_candidate_success_at",
+            "candidate_failure_streak",
         )
         return {key: int(value) for key, value in zip(keys, row, strict=True)}
 

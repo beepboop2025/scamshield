@@ -100,8 +100,14 @@ class TestIocStore(unittest.TestCase):
             live_completed=15,
             live_failed=1,
             live_deferred=2,
+            reconcile_interval_seconds=300,
+            candidate_verify_interval_seconds=300,
             last_reconciled=7,
+            last_reconcile_success_at=990,
+            reconcile_failure_streak=0,
             last_candidates_checked=4,
+            last_candidate_success_at=995,
+            candidate_failure_streak=0,
             now=1000,
         )
         state = self.store.monitor_state()
@@ -109,6 +115,8 @@ class TestIocStore(unittest.TestCase):
         self.assertEqual(state["resolved_sources"], 12)
         self.assertEqual(state["live_queue_depth"], 3)
         self.assertEqual(state["live_deferred"], 2)
+        self.assertEqual(state["last_reconcile_success_at"], 990)
+        self.assertEqual(state["candidate_failure_streak"], 0)
         self.assertNotIn("source_key", state)
 
         with self.assertRaisesRegex(ValueError, "cannot exceed capacity"):
@@ -122,8 +130,14 @@ class TestIocStore(unittest.TestCase):
                 live_completed=0,
                 live_failed=0,
                 live_deferred=0,
+                reconcile_interval_seconds=300,
+                candidate_verify_interval_seconds=300,
                 last_reconciled=0,
+                last_reconcile_success_at=0,
+                reconcile_failure_streak=0,
                 last_candidates_checked=0,
+                last_candidate_success_at=0,
+                candidate_failure_streak=0,
                 now=1000,
             )
 

@@ -466,13 +466,49 @@ def monitor_text(*, now: int | None = None) -> str:
     current = int(time.time()) if now is None else now
     age = max(0, current - state["updated_at"])
     uptime = max(0, current - state["started_at"])
-    if age <= 180:
-        condition = "HEALTHY"
-    elif age <= 600:
-        condition = "STALE"
-    else:
+    reconcile_age = max(
+        0,
+        current - (state["last_reconcile_success_at"] or state["started_at"]),
+    )
+    candidate_age = max(
+        0,
+        current - (state["last_candidate_success_at"] or state["started_at"]),
+    )
+    maintenance_overdue = (
+        reconcile_age > state["reconcile_interval_seconds"]
+        or candidate_age > state["candidate_verify_interval_seconds"]
+    )
+    maintenance_failed = (
+        state["reconcile_failure_streak"] > 0
+        or state["candidate_failure_streak"] > 0
+    )
+    maintenance_starting = (
+        state["last_reconcile_success_at"] == 0
+        or state["last_candidate_success_at"] == 0
+    )
+    if age > 600:
         condition = "OFFLINE OR STALLED"
+    elif age > 180:
+        condition = "STALE"
+    elif maintenance_failed:
+        condition = "DEGRADED"
+    elif maintenance_overdue:
+        condition = "MAINTENANCE STALE"
+    elif maintenance_starting:
+        condition = "STARTING"
+    else:
+        condition = "HEALTHY"
     handled = state["live_completed"] + state["live_failed"]
+    reconcile_success = (
+        "not yet"
+        if state["last_reconcile_success_at"] == 0
+        else f"{_short_duration(reconcile_age)} ago"
+    )
+    candidate_success = (
+        "not yet"
+        if state["last_candidate_success_at"] == 0
+        else f"{_short_duration(candidate_age)} ago"
+    )
     return (
         f"<b>Telegram monitor · {condition}</b>\n\n"
         f"Heartbeat: {_short_duration(age)} ago · uptime {_short_duration(uptime)}\n"
@@ -481,8 +517,11 @@ def monitor_text(*, now: int | None = None) -> str:
         f"Live since restart: {handled} handled · {state['live_failed']} failed\n"
         f"Queue: {state['live_queue_depth']}/{state['live_queue_capacity']} · "
         f"{state['live_deferred']} deferred to durable recovery\n"
-        f"Last recovery sweep: {state['last_reconciled']} message(s)\n"
-        f"Last candidate pass: {state['last_candidates_checked']} checked\n\n"
+        f"Recovery: {reconcile_success} · {state['last_reconciled']} message(s) · "
+        f"failure streak {state['reconcile_failure_streak']}\n"
+        f"Candidates: {candidate_success} · "
+        f"{state['last_candidates_checked']} checked · "
+        f"failure streak {state['candidate_failure_streak']}\n\n"
         "Aggregate operational data only; no source IDs or message contents."
     )
 

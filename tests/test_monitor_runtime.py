@@ -94,6 +94,9 @@ class MonitorRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(collector.store.state["resolved_sources"], 1)
         self.assertEqual(collector.store.state["unresolved_sources"], 1)
         self.assertEqual(collector.store.state["live_queue_depth"], 1)
+        self.assertEqual(collector.store.state["reconcile_interval_seconds"], 300)
+        self.assertEqual(collector.store.state["last_reconcile_success_at"], 0)
+        self.assertEqual(collector.store.state["reconcile_failure_streak"], 0)
         self.assertNotIn(self.source.reference, str(collector.store.state))
         self.assertNotIn(self.source.peer_id, str(collector.store.state))
 

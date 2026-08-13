@@ -43,14 +43,17 @@ class _Client:
 
 
 class _ConcurrentClient:
-    def __init__(self):
+    def __init__(self, *, fail_entity=None):
         self.active = 0
         self.max_active = 0
+        self.fail_entity = fail_entity
 
     async def iter_messages(self, entity, *, limit, min_id=0, reverse=False):
         self.active += 1
         self.max_active = max(self.max_active, self.active)
         try:
+            if entity == self.fail_entity:
+                raise RuntimeError("history unavailable")
             await asyncio.sleep(0.02)
             yield _Message(1, f"ordinary update from {entity}")
         finally:
@@ -208,8 +211,15 @@ class TelegramCollectorTests(unittest.IsolatedAsyncioTestCase):
             pseudonym_key=self.key,
         )
 
-        self.assertEqual(await collector.reconcile_sources((first, second)), 2)
+        outcome = await collector.reconcile_sources((first, second))
+        self.assertEqual(outcome.processed, 2)
+        self.assertEqual(outcome.failed_sources, 0)
         self.assertEqual(client.max_active, 2)
+
+        collector.client = _ConcurrentClient(fail_entity="second")
+        outcome = await collector.reconcile_sources((first, second))
+        self.assertEqual(outcome.processed, 1)
+        self.assertEqual(outcome.failed_sources, 1)
 
     async def test_cancelled_live_analysis_is_immediately_retryable(self):
         client = _Client([])
@@ -277,6 +287,47 @@ class TelegramCollectorTests(unittest.IsolatedAsyncioTestCase):
             (self.source_key,),
         ).fetchone()
         self.assertEqual(source_status, ("REMOVED",))
+
+    async def test_inflight_result_is_rejected_after_remove_and_reactivate(self):
+        client = _Client([])
+        blocking = _BlockingAnalyzer(self.analyzer)
+        collector = TelegramCollector(
+            client=client,
+            store=self.store,
+            analyzer=blocking,
+            settings=MonitorSettings(),
+            pseudonym_key=self.key,
+        )
+        task = asyncio.create_task(collector.process_live(
+            self.source, _Message(32, "ordinary update 32"),
+        ))
+        self.assertTrue(await asyncio.to_thread(blocking.started.wait, 1))
+        collector.deactivate_source(self.source_key)
+        self.store.register_collector_source(
+            self.source_key,
+            configured_ref_sha256=self.source.reference_digest,
+            surface=self.source.surface,
+            authorization=self.source.authorization,
+            status="REMOVED",
+        )
+        collector.activate_source(self.source_key)
+        self.store.register_collector_source(
+            self.source_key,
+            configured_ref_sha256=self.source.reference_digest,
+            surface=self.source.surface,
+            authorization=self.source.authorization,
+        )
+        blocking.release.set()
+
+        outcome = await task
+        self.assertEqual(outcome.status, "REMOVED")
+        self.assertEqual(self.store.coverage_digest(), [])
+        receipt = self.store.conn.execute(
+            """SELECT tier FROM telegram_messages
+               WHERE source_key = ? AND message_id = 32""",
+            (self.source_key,),
+        ).fetchone()
+        self.assertEqual(receipt, ("SKIPPED_SOURCE_REMOVED",))
 
 
 if __name__ == "__main__":

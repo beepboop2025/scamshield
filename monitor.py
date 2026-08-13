@@ -93,7 +93,11 @@ class MonitorRuntime:
         self.live_failed = 0
         self.live_deferred = 0
         self.last_reconciled = 0
+        self.last_reconcile_success_at = 0
+        self.reconcile_failure_streak = 0
         self.last_candidates_checked = 0
+        self.last_candidate_success_at = 0
+        self.candidate_failure_streak = 0
 
     @property
     def sources(self) -> tuple[ResolvedSource, ...]:
@@ -313,13 +317,20 @@ class MonitorRuntime:
     def status_text(self) -> str:
         """Return a bounded, identity-free operational summary."""
 
+        condition = (
+            "degraded"
+            if self.reconcile_failure_streak or self.candidate_failure_streak
+            else "connected"
+        )
         return (
-            f"connected; sources={len(self.sources)}; "
+            f"{condition}; sources={len(self.sources)}; "
             f"unresolved={len(self.failed_references)}; "
             f"live_queue={self.live_queue.qsize()}/{self.live_queue.maxsize}; "
             f"live_done={self.live_completed}; live_failed={self.live_failed}; "
             f"deferred={self.live_deferred}; reconciled={self.last_reconciled}; "
-            f"candidates_checked={self.last_candidates_checked}"
+            f"reconcile_failure_streak={self.reconcile_failure_streak}; "
+            f"candidates_checked={self.last_candidates_checked}; "
+            f"candidate_failure_streak={self.candidate_failure_streak}"
         )
 
     def publish_status(self, *, ready: bool = False, watchdog: bool = False) -> None:
@@ -336,8 +347,16 @@ class MonitorRuntime:
                 live_completed=self.live_completed,
                 live_failed=self.live_failed,
                 live_deferred=self.live_deferred,
+                reconcile_interval_seconds=self.settings.reconcile_seconds,
+                candidate_verify_interval_seconds=(
+                    self.settings.candidate_verify_seconds
+                ),
                 last_reconciled=self.last_reconciled,
+                last_reconcile_success_at=self.last_reconcile_success_at,
+                reconcile_failure_streak=self.reconcile_failure_streak,
                 last_candidates_checked=self.last_candidates_checked,
+                last_candidate_success_at=self.last_candidate_success_at,
+                candidate_failure_streak=self.candidate_failure_streak,
             )
         except Exception as exc:
             log.warning("monitor heartbeat storage failed (%s)", type(exc).__name__)
@@ -436,13 +455,22 @@ class MonitorRuntime:
 async def reconciliation_loop(runtime: MonitorRuntime) -> None:
     while True:
         try:
-            processed = await runtime.collector.reconcile_sources(runtime.sources)
-            runtime.last_reconciled = processed
-            runtime.publish_status()
+            outcome = await runtime.collector.reconcile_sources(runtime.sources)
         except Exception as exc:
+            runtime.reconcile_failure_streak += 1
             log.exception("history reconciliation failed (%s)", type(exc).__name__)
-            with suppress(OSError):
-                notify_systemd(f"STATUS=degraded; reconciliation={type(exc).__name__}")
+        else:
+            runtime.last_reconciled = outcome.processed
+            if outcome.failed_sources:
+                runtime.reconcile_failure_streak += 1
+                log.warning(
+                    "history reconciliation failed for %d source(s)",
+                    outcome.failed_sources,
+                )
+            else:
+                runtime.last_reconcile_success_at = int(time.time())
+                runtime.reconcile_failure_streak = 0
+        runtime.publish_status()
         await asyncio.sleep(runtime.settings.reconcile_seconds)
 
 
@@ -462,9 +490,13 @@ async def candidate_verification_loop(runtime: MonitorRuntime) -> None:
             runtime.last_candidates_checked = (
                 await runtime.verify_discovery_candidates()
             )
-            runtime.publish_status()
         except Exception as exc:
+            runtime.candidate_failure_streak += 1
             log.exception("candidate verification failed (%s)", type(exc).__name__)
+        else:
+            runtime.last_candidate_success_at = int(time.time())
+            runtime.candidate_failure_streak = 0
+        runtime.publish_status()
         await asyncio.sleep(runtime.settings.candidate_verify_seconds)
 
 

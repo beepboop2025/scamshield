@@ -441,8 +441,14 @@ class GuardianCopyMatchesBehaviour(unittest.TestCase):
             live_completed=15,
             live_failed=1,
             live_deferred=2,
+            reconcile_interval_seconds=300,
+            candidate_verify_interval_seconds=300,
             last_reconciled=7,
+            last_reconcile_success_at=990,
+            reconcile_failure_streak=0,
             last_candidates_checked=4,
+            last_candidate_success_at=995,
+            candidate_failure_streak=0,
             now=1000,
         )
         rendered = mod.monitor_text(now=1010)
@@ -466,6 +472,34 @@ class GuardianCopyMatchesBehaviour(unittest.TestCase):
             self.assertEqual(group_message.replies, [])
         finally:
             mod.OWNER_ID = original_owner_id
+
+    def test_monitor_health_exposes_stalled_maintenance(self):
+        mod = _load_bot(None)
+        mod.STORE.record_monitor_state(
+            started_at=500,
+            resolved_sources=12,
+            unresolved_sources=0,
+            live_queue_depth=0,
+            live_queue_capacity=1000,
+            live_enqueued=20,
+            live_completed=20,
+            live_failed=0,
+            live_deferred=0,
+            reconcile_interval_seconds=300,
+            candidate_verify_interval_seconds=300,
+            last_reconciled=0,
+            last_reconcile_success_at=600,
+            reconcile_failure_streak=0,
+            last_candidates_checked=0,
+            last_candidate_success_at=990,
+            candidate_failure_streak=0,
+            now=1000,
+        )
+
+        rendered = mod.monitor_text(now=1001)
+
+        self.assertIn("MAINTENANCE STALE", rendered)
+        self.assertIn("Recovery: 6m ago", rendered)
 
     def test_owner_liquidity_commands_are_registered(self):
         mod = _load_bot(None)
