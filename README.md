@@ -87,6 +87,19 @@ The bot also links to the crawlable
 which explains interpretation and reporting outside Telegram. Override that
 link with `SCAMSHIELD_GUIDE_URL` only when deploying an equivalent guide.
 
+Private verdicts include one-tap `Useful`, `Looks wrong`, and `Unsure`
+feedback. The store records only the opaque assessment ID, original tier, and
+selected response; it does not attach a Telegram identity, submitted text, or
+exact IOC. Clean-result disagreement remains eligible because it is the signal
+needed to find false negatives without retaining every clean assessment.
+
+Photos, screenshots, voice notes, PDFs, and other non-text uploads now receive
+an explicit text-only limitation instead of silence. ScamShield counts only
+the aggregate input type so the operator can prioritize OCR, QR extraction, or
+voice support from measured demand. The owner-only `/funnel` command shows
+these counts, `/start` campaign totals, and assessment-feedback totals without
+user identities or message contents.
+
 ## API and MCP
 
 Local integrations can use the same detector through a loopback REST API or a

@@ -13,6 +13,7 @@ not importable. The stub records which callbacks main() wires up, which is
 the observable we care about.
 """
 
+import asyncio
 import importlib
 import re
 import sys
@@ -54,7 +55,7 @@ def _install_telegram_stub():
     filters_mod.COMMAND = _Filter()
 
     class _Handler:
-        def __init__(self, *args):
+        def __init__(self, *args, **_kwargs):
             # CommandHandler(name, cb) / MessageHandler(filter, cb)
             self.callback = args[-1]
 
@@ -89,6 +90,7 @@ def _install_telegram_stub():
 
     ext = types.ModuleType("telegram.ext")
     ext.Application = _StubApp
+    ext.CallbackQueryHandler = _Handler
     ext.CommandHandler = _Handler
     ext.MessageHandler = _Handler
     ext.ContextTypes = types.SimpleNamespace(DEFAULT_TYPE=object)
@@ -154,6 +156,29 @@ def _registered_callbacks(mod):
 
 
 class GuardianCopyMatchesBehaviour(unittest.TestCase):
+
+    @staticmethod
+    def _message(**overrides):
+        class Message:
+            def __init__(self):
+                self.text = None
+                self.caption = None
+                self.photo = None
+                self.voice = None
+                self.audio = None
+                self.document = None
+                self.video = None
+                self.video_note = None
+                self.sticker = None
+                self.contact = None
+                self.replies = []
+                for key, value in overrides.items():
+                    setattr(self, key, value)
+
+            async def reply_text(self, text, **kwargs):
+                self.replies.append((text, kwargs))
+
+        return Message()
 
     def test_shipped_default_does_not_advertise_groups(self):
         """Guardian off (production): /start must not mention groups
@@ -277,7 +302,102 @@ class GuardianCopyMatchesBehaviour(unittest.TestCase):
         """Turning the mode off must not have gutted the code path."""
         mod = _load_bot(None)
         self.assertTrue(callable(mod.on_group))
-        self.assertEqual(mod.POLICY["CONFIRMED_PATTERN"], "delete")
+        self.assertEqual(mod.POLICY["CONFIRMED_PATTERN"], "flag")
+
+    def test_start_campaign_is_bounded_and_normalized(self):
+        mod = _load_bot(None)
+        self.assertEqual(mod.start_campaign([]), "direct")
+        self.assertEqual(mod.start_campaign(["Palimpsest_Guide"]), "palimpsest_guide")
+        self.assertEqual(mod.start_campaign(["../../telegram-user:42"]), "unattributed")
+
+    def test_result_keyboard_contains_only_opaque_feedback_context(self):
+        mod = _load_bot(None)
+        result = types.SimpleNamespace(
+            overall_tier="CLEAN",
+            provenance=types.SimpleNamespace(assessment_id="a" * 24),
+        )
+        markup = mod.result_keyboard(result)
+        rows = getattr(markup, "inline_keyboard", markup)
+        callbacks = []
+        labels = []
+        for button in rows[0]:
+            labels.append(button.text if hasattr(button, "text") else button[0])
+            if hasattr(button, "callback_data"):
+                callbacks.append(button.callback_data)
+            else:
+                callbacks.append(button[1].get("callback_data"))
+        self.assertIn("✅ Seems right", labels)
+        self.assertIn("⚠️ Missed risk", labels)
+        self.assertTrue(all(value.startswith("feedback:" + "a" * 24) for value in callbacks))
+        self.assertTrue(all(len(value.encode("utf-8")) <= 64 for value in callbacks))
+        self.assertNotIn("telegram-user", str(callbacks))
+
+    def test_non_text_inputs_get_specific_honest_copy(self):
+        mod = _load_bot(None)
+        photo = types.SimpleNamespace(
+            photo=[object()], voice=None, audio=None, document=None,
+            video=None, video_note=None, sticker=None, contact=None,
+        )
+        self.assertEqual(mod.unsupported_input_kind(photo), "photo")
+        copy = mod.unsupported_input_text("photo")
+        self.assertIn("photo or screenshot", copy)
+        self.assertIn("text-only today", copy)
+        self.assertIn("will not pretend this upload was checked", copy)
+
+    def test_private_photo_handler_replies_and_records_only_modality(self):
+        mod = _load_bot(None)
+        message = self._message(photo=[object()])
+        update = types.SimpleNamespace(
+            message=message,
+            effective_user=types.SimpleNamespace(id=42),
+        )
+        asyncio.run(mod.on_private(update, types.SimpleNamespace()))
+        self.assertEqual(len(message.replies), 1)
+        self.assertIn("photo or screenshot", message.replies[0][0])
+        self.assertEqual(
+            mod.STORE.product_event_digest("unsupported_input"), [("photo", 1)]
+        )
+        stored = str(mod.STORE.conn.execute(
+            "SELECT * FROM product_events_daily"
+        ).fetchall())
+        self.assertNotIn("42", stored)
+
+    def test_start_and_feedback_handlers_complete_the_product_loop(self):
+        mod = _load_bot(None)
+        message = self._message()
+        start_update = types.SimpleNamespace(
+            message=message,
+            effective_user=types.SimpleNamespace(id=42),
+        )
+        asyncio.run(mod.cmd_start(
+            start_update, types.SimpleNamespace(args=["Palimpsest_Guide"]),
+        ))
+        self.assertEqual(
+            mod.STORE.product_event_digest("start"), [("palimpsest_guide", 1)]
+        )
+
+        class Query:
+            data = f"feedback:{'b' * 24}:CLEAN:disagree"
+
+            def __init__(self):
+                self.answers = []
+                self.markup = None
+
+            async def answer(self, text, **kwargs):
+                self.answers.append((text, kwargs))
+
+            async def edit_message_reply_markup(self, **kwargs):
+                self.markup = kwargs.get("reply_markup")
+
+        query = Query()
+        asyncio.run(mod.on_feedback(
+            types.SimpleNamespace(callback_query=query), types.SimpleNamespace(),
+        ))
+        self.assertEqual(
+            mod.STORE.assessment_feedback_digest(), [("CLEAN", "disagree", 1)]
+        )
+        self.assertIn("possible miss", query.answers[0][0])
+        self.assertIsNotNone(query.markup)
 
     def test_owner_liquidity_commands_are_registered(self):
         mod = _load_bot(None)
@@ -308,6 +428,8 @@ class GuardianCopyMatchesBehaviour(unittest.TestCase):
             mod.cmd_privacy,
             mod.cmd_explore,
             mod.cmd_help,
+            mod.cmd_funnel,
+            mod.on_feedback,
         ):
             self.assertIn(callback, callbacks)
 

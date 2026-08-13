@@ -24,6 +24,7 @@ Setup:
 Owner commands:
   /digest — dump the IOC table collected so far.
   /coverage — show measured collection coverage.
+  /funnel — show aggregate starts, unsupported inputs, and verdict feedback.
   /liquidity [YYYY-MM-DD] — show the reviewed UTC-day liquidity pulse.
   /review_amount ... — bind one explicit monetary review to a scanned message.
 """
@@ -35,6 +36,7 @@ import hashlib
 import html
 import logging
 import os
+import re
 import socket
 from pathlib import Path
 
@@ -60,7 +62,7 @@ if _env.exists():
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import (Application, CommandHandler, ContextTypes,
-                          MessageHandler, filters)
+                          CallbackQueryHandler, MessageHandler, filters)
 
 from scamshield.analysis import AnalysisService, ObservationContext
 from scamshield.detector import Verdict
@@ -105,6 +107,12 @@ PUBLIC_COMMANDS = (
     BotCommand("privacy", "See what is stored and shared"),
     BotCommand("explore", "Open the evidence products"),
     BotCommand("help", "Show commands and reporting help"),
+)
+
+_CAMPAIGN_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+_FEEDBACK_RE = re.compile(
+    r"^feedback:([0-9a-f]{24}):(CLEAN|WATCH|LIKELY_SCAM|CONFIRMED_PATTERN):"
+    r"(agree|disagree|unsure)$"
 )
 
 # ---------------------------------------------------------------------------
@@ -160,7 +168,7 @@ REPORT_FOOTER = (
 # GUARDIAN_ENABLED is false; it is the policy for a mode that is off.
 # ---------------------------------------------------------------------------
 POLICY = {
-    "CONFIRMED_PATTERN": "delete",
+    "CONFIRMED_PATTERN": "flag",
     "LIKELY_SCAM": "flag",
     "WATCH": "ignore",
     "CLEAN": "ignore",
@@ -205,13 +213,27 @@ def start_text() -> str:
     return out
 
 
-async def cmd_start(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    campaign = start_campaign(context.args)
+    try:
+        STORE.record_product_event("start", campaign)
+    except Exception as exc:
+        log.warning("start attribution skipped: %s", exc)
     await update.message.reply_text(
         start_text(), parse_mode=ParseMode.HTML, reply_markup=product_keyboard(),
     )
 
 
-def product_keyboard() -> InlineKeyboardMarkup:
+def start_campaign(args: list[str] | tuple[str, ...] | None) -> str:
+    """Normalize Telegram's /start payload without retaining user identity."""
+
+    if not args:
+        return "direct"
+    candidate = str(args[0]).strip().lower()
+    return candidate if _CAMPAIGN_RE.fullmatch(candidate) else "unattributed"
+
+
+def _product_rows() -> list[list[InlineKeyboardButton]]:
     rows = []
     if EVIDENCE_CHANNEL_URL:
         rows.append([InlineKeyboardButton("Follow Evidence Signal", url=EVIDENCE_CHANNEL_URL)])
@@ -222,7 +244,33 @@ def product_keyboard() -> InlineKeyboardMarkup:
         InlineKeyboardButton("Palimpsest", url=PALIMPSEST_URL),
         InlineKeyboardButton("NarcoScope", url=NARCOSCOPE_URL),
     ])
-    return InlineKeyboardMarkup(rows)
+    return rows
+
+
+def product_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(_product_rows())
+
+
+def result_keyboard(result) -> InlineKeyboardMarkup:
+    """Offer one explicit, privacy-safe assessment response."""
+
+    assessment_id = result.provenance.assessment_id
+    tier = result.overall_tier
+    positive_label = "Seems right" if tier == "CLEAN" else "Useful"
+    negative_label = "Missed risk" if tier == "CLEAN" else "Looks wrong"
+
+    def button(label: str, response: str) -> InlineKeyboardButton:
+        return InlineKeyboardButton(
+            label,
+            callback_data=f"feedback:{assessment_id}:{tier}:{response}",
+        )
+
+    feedback = [[
+        button(f"✅ {positive_label}", "agree"),
+        button(f"⚠️ {negative_label}", "disagree"),
+        button("❓ Unsure", "unsure"),
+    ]]
+    return InlineKeyboardMarkup([*feedback, *_product_rows()])
 
 
 def how_text() -> str:
@@ -251,6 +299,8 @@ def privacy_text() -> str:
         "• Your submitted text is used to produce the reply.\n"
         "• Indicators and privacy-minimized assessment records may be retained for "
         "review; raw sample storage is off by default.\n"
+        "• Verdict feedback stores only an opaque assessment reference, its tier, "
+        "and your selected response — not your Telegram identity or message text.\n"
         "• Public API/MCP assessments are memory-only: no storage, no Palimpsest "
         "bridge, and no raw text or exact IOC values in their response.\n"
         f"• {html.escape(storage)}\n\n"
@@ -322,6 +372,40 @@ def help_text() -> str:
 
 async def cmd_help(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(help_text(), parse_mode=ParseMode.HTML)
+
+
+def funnel_text() -> str:
+    starts = STORE.product_event_digest("start")
+    unsupported = STORE.product_event_digest("unsupported_input")
+    feedback = STORE.assessment_feedback_digest()
+    lines = ["<b>Privacy-safe product funnel · last 30 UTC days</b>"]
+    lines.append("\n<b>Bot starts:</b>")
+    lines.extend(
+        f"• {html.escape(value)} — {count}" for value, count in starts
+    )
+    if not starts:
+        lines.append("• none recorded")
+    lines.append("\n<b>Unsupported inputs:</b>")
+    lines.extend(
+        f"• {html.escape(value)} — {count}" for value, count in unsupported
+    )
+    if not unsupported:
+        lines.append("• none recorded")
+    lines.append("\n<b>Assessment feedback:</b>")
+    lines.extend(
+        f"• {html.escape(tier)} / {html.escape(response)} — {count}"
+        for tier, response, count in feedback
+    )
+    if not feedback:
+        lines.append("• none recorded")
+    lines.append("\nNo Telegram user IDs, submitted text, or exact IOCs are in this view.")
+    return "\n".join(lines)
+
+
+async def cmd_funnel(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id != OWNER_ID:
+        return
+    await update.message.reply_text(funnel_text(), parse_mode=ParseMode.HTML)
 
 
 async def cmd_digest(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
@@ -435,6 +519,16 @@ def _record_result(result, text: str) -> None:
 async def on_private(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     text = update.message.text or update.message.caption or ""
     if not text.strip():
+        kind = unsupported_input_kind(update.message)
+        try:
+            STORE.record_product_event("unsupported_input", kind)
+        except Exception as exc:
+            log.warning("unsupported-input metric skipped: %s", exc)
+        await update.message.reply_text(
+            unsupported_input_text(kind),
+            parse_mode=ParseMode.HTML,
+            reply_markup=product_keyboard(),
+        )
         return
     collection = ObservationContext.create(
         text,
@@ -448,7 +542,85 @@ async def on_private(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     _record_result(result, text)
     await update.message.reply_text(render_analysis(result, surface="private_submission"),
                                     parse_mode=ParseMode.HTML,
-                                    reply_markup=product_keyboard())
+                                    reply_markup=result_keyboard(result))
+
+
+def unsupported_input_kind(message) -> str:
+    """Classify only the media type; never inspect or persist the payload."""
+
+    if getattr(message, "photo", None):
+        return "photo"
+    if getattr(message, "voice", None):
+        return "voice"
+    if getattr(message, "audio", None):
+        return "audio"
+    document = getattr(message, "document", None)
+    if document is not None:
+        mime = str(getattr(document, "mime_type", "") or "").lower()
+        if mime == "application/pdf":
+            return "pdf"
+        if mime.startswith("image/"):
+            return "image_document"
+        return "document"
+    if getattr(message, "video", None) or getattr(message, "video_note", None):
+        return "video"
+    if getattr(message, "sticker", None):
+        return "sticker"
+    if getattr(message, "contact", None):
+        return "contact"
+    return "non_text"
+
+
+def unsupported_input_text(kind: str) -> str:
+    labels = {
+        "photo": "a photo or screenshot",
+        "image_document": "an image file",
+        "voice": "a voice note",
+        "audio": "an audio file",
+        "pdf": "a PDF",
+        "document": "a document",
+        "video": "a video",
+        "sticker": "a sticker",
+        "contact": "a contact card",
+        "non_text": "a non-text message",
+    }
+    label = labels.get(kind, "a non-text message")
+    return (
+        f"<b>I received {html.escape(label)}, but this production check is text-only today.</b>\n\n"
+        "Please paste the suspicious wording or resend it with a caption. "
+        "Do not transcribe or submit passwords, OTPs, PINs, or seed phrases.\n\n"
+        "Screenshot OCR, QR extraction, and voice transcription are being added only "
+        "with an explicit privacy boundary; I will not pretend this upload was checked."
+    )
+
+
+async def on_feedback(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    match = _FEEDBACK_RE.fullmatch(str(getattr(query, "data", "") or ""))
+    if match is None:
+        await query.answer("That feedback link is invalid or expired.", show_alert=True)
+        return
+    assessment_id, tier, response = match.groups()
+    try:
+        STORE.record_assessment_feedback(
+            assessment_id,
+            original_tier=tier,
+            response=response,
+        )
+    except Exception as exc:
+        log.warning("assessment feedback failed: %s", exc)
+        await query.answer("I could not record that safely. Please try again.", show_alert=True)
+        return
+    messages = {
+        "agree": "Thanks — recorded without your identity or message text.",
+        "disagree": "Thanks — this is now counted as a possible miss.",
+        "unsure": "Thanks — uncertainty is useful feedback too.",
+    }
+    await query.answer(messages[response])
+    try:
+        await query.edit_message_reply_markup(reply_markup=product_keyboard())
+    except Exception as exc:
+        log.warning("feedback keyboard cleanup skipped: %s", exc)
 
 
 async def on_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -557,6 +729,8 @@ def main() -> None:
     app.add_handler(CommandHandler("coverage", cmd_coverage))
     app.add_handler(CommandHandler("liquidity", cmd_liquidity))
     app.add_handler(CommandHandler("review_amount", cmd_review_amount))
+    app.add_handler(CommandHandler("funnel", cmd_funnel))
+    app.add_handler(CallbackQueryHandler(on_feedback, pattern=r"^feedback:"))
     app.add_handler(MessageHandler(
         filters.ChatType.PRIVATE & ~filters.COMMAND, on_private))
     # Guardian mode: registered only when explicitly switched on. See the

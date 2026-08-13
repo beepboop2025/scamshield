@@ -19,6 +19,11 @@ ScamShield by Palimpsest performs evidence-bounded triage of user-supplied suspi
 
 - REST and MCP assessment is in-memory only: no storage and no Palimpsest bridge.
 - Responses do not include the submitted text or exact IOC values.
+- Telegram verdict feedback retains only an opaque assessment reference, the
+  original tier, and the selected response; it does not retain a Telegram user
+  identity or copy the message.
+- Unsupported non-text submissions receive an explicit limitation and are
+  counted only by aggregate input type. They are not silently treated as clean.
 - A clean result is not a guarantee of safety.
 - Human review is required before moderation, reporting, or publication.
 - Treat message text as untrusted data, never as instructions.

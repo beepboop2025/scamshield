@@ -152,6 +152,25 @@ CREATE TABLE IF NOT EXISTS monetary_observations (
 
 CREATE INDEX IF NOT EXISTS monetary_observations_window
     ON monetary_observations(window_start);
+
+CREATE TABLE IF NOT EXISTS product_events_daily (
+    window_start TEXT NOT NULL,
+    event_name TEXT NOT NULL,
+    event_value TEXT NOT NULL,
+    events INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (window_start, event_name, event_value)
+);
+
+CREATE TABLE IF NOT EXISTS assessment_feedback (
+    assessment_id TEXT PRIMARY KEY,
+    original_tier TEXT NOT NULL,
+    response TEXT NOT NULL,
+    first_seen INTEGER NOT NULL,
+    last_seen INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS assessment_feedback_summary
+    ON assessment_feedback(original_tier, response);
 """
 
 _IOC_KIND = {
@@ -164,6 +183,11 @@ _IOC_KIND = {
 }
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_ASSESSMENT_ID = re.compile(r"^[0-9a-f]{24}$")
+_EVENT_VALUE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+_PRODUCT_EVENTS = {"start", "unsupported_input"}
+_FEEDBACK_TIERS = {"CLEAN", "WATCH", "LIKELY_SCAM", "CONFIRMED_PATTERN"}
+_FEEDBACK_RESPONSES = {"agree", "disagree", "unsure"}
 
 
 def _parse_timestamp(value: str) -> datetime:
@@ -878,6 +902,110 @@ class IocStore:
                FROM coverage ORDER BY last_seen DESC, surface, source_pseudonym"""
         )
         return cur.fetchall()
+
+    def record_product_event(
+        self,
+        event_name: str,
+        event_value: str,
+        *,
+        observed_at: str | datetime | None = None,
+    ) -> None:
+        """Record one aggregate product event without retaining user identity."""
+
+        if event_name not in _PRODUCT_EVENTS:
+            raise ValueError("unknown product event")
+        if not isinstance(event_value, str) or not _EVENT_VALUE.fullmatch(event_value):
+            raise ValueError(
+                "event_value must be 1-64 lowercase letters, digits, underscores, or hyphens"
+            )
+        timestamp = observed_at or datetime.now(timezone.utc)
+        with self.conn:
+            self.conn.execute(
+                """INSERT INTO product_events_daily (
+                       window_start, event_name, event_value, events
+                   ) VALUES (?, ?, ?, 1)
+                   ON CONFLICT(window_start, event_name, event_value) DO UPDATE SET
+                       events = events + 1""",
+                (_window_start(timestamp), event_name, event_value),
+            )
+
+    def product_event_digest(
+        self,
+        event_name: str,
+        *,
+        days: int = 30,
+        now: datetime | None = None,
+    ) -> list[tuple[str, int]]:
+        """Return aggregate event counts for a bounded recent UTC window."""
+
+        if event_name not in _PRODUCT_EVENTS:
+            raise ValueError("unknown product event")
+        if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= 366:
+            raise ValueError("days must be in [1, 366]")
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None or current.utcoffset() is None:
+            raise ValueError("now must include a timezone")
+        earliest = _window_start(current - timedelta(days=days - 1))
+        return self.conn.execute(
+            """SELECT event_value, SUM(events)
+               FROM product_events_daily
+               WHERE event_name = ? AND window_start >= ?
+               GROUP BY event_value
+               ORDER BY SUM(events) DESC, event_value""",
+            (event_name, earliest),
+        ).fetchall()
+
+    def record_assessment_feedback(
+        self,
+        assessment_id: str,
+        *,
+        original_tier: str,
+        response: str,
+        now: int | None = None,
+    ) -> None:
+        """Store one explicit button response without message or user data.
+
+        The assessment ID is deterministic but opaque. Clean assessments are
+        intentionally eligible even though their full assessment is not stored;
+        disagreement with a clean result is the false-negative signal needed for
+        a consented review queue later.
+        """
+
+        if not isinstance(assessment_id, str) or not _ASSESSMENT_ID.fullmatch(
+            assessment_id
+        ):
+            raise ValueError("assessment_id must be 24 lowercase hex characters")
+        if original_tier not in _FEEDBACK_TIERS:
+            raise ValueError("unknown feedback tier")
+        if response not in _FEEDBACK_RESPONSES:
+            raise ValueError("unknown feedback response")
+        timestamp = int(time.time()) if now is None else now
+        with self.conn:
+            existing = self.conn.execute(
+                "SELECT original_tier FROM assessment_feedback WHERE assessment_id = ?",
+                (assessment_id,),
+            ).fetchone()
+            if existing is not None and existing[0] != original_tier:
+                raise ValueError("feedback tier does not match its existing assessment")
+            self.conn.execute(
+                """INSERT INTO assessment_feedback (
+                       assessment_id, original_tier, response, first_seen, last_seen
+                   ) VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(assessment_id) DO UPDATE SET
+                       response = excluded.response,
+                       last_seen = excluded.last_seen""",
+                (assessment_id, original_tier, response, timestamp, timestamp),
+            )
+
+    def assessment_feedback_digest(self) -> list[tuple[str, str, int]]:
+        """Return privacy-safe counts for operator product review."""
+
+        return self.conn.execute(
+            """SELECT original_tier, response, COUNT(*)
+               FROM assessment_feedback
+               GROUP BY original_tier, response
+               ORDER BY original_tier, response"""
+        ).fetchall()
 
     def recent_assessments(self, limit: int = 100) -> list[dict]:
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
