@@ -6,6 +6,19 @@
   "description": "Human-curated releases from ScamShield. This feed never contains private review-queue records, submitted messages, or exact IOC values.",
   "items": [
     {
+      "id": "scamshield.release.honest-input-feedback.v1",
+      "url": "https://github.com/beepboop2025/scamshield/blob/master/README.md",
+      "title": "ScamShield adds honest non-text handling and privacy-safe verdict feedback",
+      "summary": "Photos, screenshots, voice notes, PDFs and other unsupported non-text submissions now receive an explicit text-only limitation instead of silence. Private verdicts offer one-tap useful, wrong and unsure feedback; ScamShield stores only the opaque assessment reference, original tier and selected response. Aggregate campaign and unsupported-input counts help prioritize the next adapters without retaining Telegram identities or message contents. Guardian mode remains off by default and its dormant moderation policy is now flag-only.",
+      "date_published": "2026-08-13T07:55:27Z",
+      "date_modified": "2026-08-13T07:55:27Z",
+      "tags": ["release", "Telegram", "privacy", "feedback", "multimodal"],
+      "_scamshield": {
+        "status": "reviewed product update",
+        "disclosure": "Only aggregate product-event counts and opaque feedback fields are described; no submitted message, Telegram identity, exact IOC value, or private review-queue record is included."
+      }
+    },
+    {
       "id": "scamshield.release.public-safety-guide.v1",
       "url": "https://palimpsest.info/guides/telegram-scam-message-checker/",
       "title": "ScamShield publishes a public message-checking and interpretation guide",

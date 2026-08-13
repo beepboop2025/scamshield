@@ -40,6 +40,7 @@ flowchart LR
     V --> A
 
     A --> S[(SQLite: IOCs, assessments, coverage)]
+    B --> Q[(Aggregate product events / opaque feedback)]
     A --> X[Local one-shot bridge]
     X --> E[Palimpsest Evidence Capsule]
     E --> O[(Private runtime outbox)]
@@ -76,6 +77,11 @@ No capsule intent can execute code, call a webhook, or publish content.
    provenance hypotheses.
 8. Palimpsest's feed generator removes exact IOCs and matched fragments. Its
    default also withholds message-only provenance matches.
+9. A private user may explicitly mark a verdict useful, wrong, or uncertain.
+   That optional response stores only the assessment ID, original tier, and
+   selected response. Telegram identity and message text are not copied into
+   the feedback table. A non-text upload that cannot yet be analyzed receives
+   an explicit limitation and contributes only an aggregate modality count.
 
 ## Shared contracts
 
@@ -186,7 +192,8 @@ precision the original table did not record.
   while the Telegram response continues.
 - SQLite uses WAL and a five-second busy timeout for the bot/monitor processes.
 - Clean messages are not exported and do not create assessment rows; they only
-  increment coverage.
+  increment coverage. An explicit feedback click may create a separate opaque
+  feedback row, but still does not persist the clean message or Telegram user.
 - An empty `channels.txt` registers no Telethon message handler. Candidate
   verification never registers a handler or joins a channel; only the separate
   corroboration-gated promotion job can add a verified public username.
@@ -213,6 +220,8 @@ distributed system until queue lag or SQLite contention is measured.
 - Keep the HMAC pseudonym key installation-local and out of repositories.
 - Raw IOC excerpts are disabled by default and require an explicit environment
   opt-in.
+- Acquisition and unsupported-input metrics are UTC-day aggregates. Verdict
+  feedback contains no Telegram user ID and cannot recover the submitted text.
 - Human-trafficking-risk findings are safeguarding leads. Do not contact or
   confront suspected recruiters, and do not label potential coerced workers as
   criminals.

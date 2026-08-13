@@ -1,6 +1,6 @@
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from scamshield.analysis import AnalysisService, ObservationContext
@@ -59,6 +59,83 @@ class TestIocStore(unittest.TestCase):
 
         pulse = self.store.daily_liquidity_pulse(date(2026, 8, 8))
         self.assertEqual(pulse["coverage"]["collection_errors"], 1)
+
+    def test_product_events_are_aggregate_bounded_and_recent(self):
+        self.store.record_product_event(
+            "start", "palimpsest_guide", observed_at="2026-08-13T02:00:00Z",
+        )
+        self.store.record_product_event(
+            "start", "palimpsest_guide", observed_at="2026-08-13T03:00:00Z",
+        )
+        self.store.record_product_event(
+            "unsupported_input", "photo", observed_at="2026-08-12T03:00:00Z",
+        )
+        now = datetime(2026, 8, 13, 12, tzinfo=timezone.utc)
+        self.assertEqual(
+            self.store.product_event_digest("start", now=now),
+            [("palimpsest_guide", 2)],
+        )
+        self.assertEqual(
+            self.store.product_event_digest("unsupported_input", days=1, now=now),
+            [],
+        )
+        database_text = str(self.store.conn.execute(
+            "SELECT * FROM product_events_daily"
+        ).fetchall())
+        self.assertNotIn("telegram-user", database_text)
+
+        with self.assertRaisesRegex(ValueError, "unknown product event"):
+            self.store.record_product_event("raw_message", "photo")
+        with self.assertRaisesRegex(ValueError, "event_value"):
+            self.store.record_product_event("start", "Bad Campaign / user:42")
+
+    def test_feedback_is_one_privacy_safe_choice_per_assessment(self):
+        assessment_id = "a" * 24
+        self.store.record_assessment_feedback(
+            assessment_id,
+            original_tier="CLEAN",
+            response="disagree",
+            now=100,
+        )
+        self.store.record_assessment_feedback(
+            assessment_id,
+            original_tier="CLEAN",
+            response="unsure",
+            now=200,
+        )
+        self.store.record_assessment_feedback(
+            "b" * 24,
+            original_tier="CONFIRMED_PATTERN",
+            response="agree",
+            now=300,
+        )
+        self.assertEqual(
+            self.store.assessment_feedback_digest(),
+            [
+                ("CLEAN", "unsure", 1),
+                ("CONFIRMED_PATTERN", "agree", 1),
+            ],
+        )
+        row = self.store.conn.execute(
+            "SELECT first_seen, last_seen FROM assessment_feedback WHERE assessment_id = ?",
+            (assessment_id,),
+        ).fetchone()
+        self.assertEqual(row, (100, 200))
+
+        with self.assertRaisesRegex(ValueError, "assessment_id"):
+            self.store.record_assessment_feedback(
+                "telegram-user:42", original_tier="CLEAN", response="agree",
+            )
+        with self.assertRaisesRegex(ValueError, "feedback response"):
+            self.store.record_assessment_feedback(
+                "c" * 24, original_tier="CLEAN", response="raw-message",
+            )
+        with self.assertRaisesRegex(ValueError, "tier does not match"):
+            self.store.record_assessment_feedback(
+                assessment_id,
+                original_tier="WATCH",
+                response="agree",
+            )
 
     def test_reviewed_observation_is_bound_to_daily_coverage(self):
         text = (
