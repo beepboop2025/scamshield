@@ -87,11 +87,12 @@ The bot also links to the crawlable
 which explains interpretation and reporting outside Telegram. Override that
 link with `SCAMSHIELD_GUIDE_URL` only when deploying an equivalent guide.
 
-Private verdicts include one-tap `Useful`, `Looks wrong`, and `Unsure`
-feedback. The store records only the opaque assessment ID, original tier, and
-selected response; it does not attach a Telegram identity, submitted text, or
-exact IOC. Clean-result disagreement remains eligible because it is the signal
-needed to find false negatives without retaining every clean assessment.
+Private verdicts include one-tap agreement, disagreement, and uncertainty
+feedback tailored to the verdict. The store records only the opaque assessment
+ID, original tier, and selected response; it does not attach a Telegram identity,
+submitted text, or exact IOC. Clean-result disagreement remains eligible because
+it is the signal needed to find false negatives without retaining every clean
+assessment.
 
 Photos, screenshots, voice notes, PDFs, and other non-text uploads now receive
 an explicit text-only limitation instead of silence. ScamShield counts only

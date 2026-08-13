@@ -403,7 +403,10 @@ def funnel_text() -> str:
 
 
 async def cmd_funnel(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id != OWNER_ID:
+    if (
+        update.effective_user.id != OWNER_ID
+        or update.effective_chat.type != "private"
+    ):
         return
     await update.message.reply_text(funnel_text(), parse_mode=ParseMode.HTML)
 

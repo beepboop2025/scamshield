@@ -218,6 +218,21 @@ def _window_start(value: str | datetime | date) -> str:
     )
 
 
+def _bounded_window_start(*, days: int, now: datetime | None = None) -> str:
+    """Return the first UTC day included in a bounded recent-day window."""
+
+    if (
+        isinstance(days, bool)
+        or not isinstance(days, int)
+        or not 1 <= days <= 366
+    ):
+        raise ValueError("days must be in [1, 366]")
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None or current.utcoffset() is None:
+        raise ValueError("now must include a timezone")
+    return _window_start(current - timedelta(days=days - 1))
+
+
 class IocStore:
     def __init__(self, path: str | Path, *, read_only: bool = False):
         if read_only:
@@ -940,12 +955,7 @@ class IocStore:
 
         if event_name not in _PRODUCT_EVENTS:
             raise ValueError("unknown product event")
-        if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= 366:
-            raise ValueError("days must be in [1, 366]")
-        current = now or datetime.now(timezone.utc)
-        if current.tzinfo is None or current.utcoffset() is None:
-            raise ValueError("now must include a timezone")
-        earliest = _window_start(current - timedelta(days=days - 1))
+        earliest = _bounded_window_start(days=days, now=now)
         return self.conn.execute(
             """SELECT event_value, SUM(events)
                FROM product_events_daily
@@ -997,14 +1007,23 @@ class IocStore:
                 (assessment_id, original_tier, response, timestamp, timestamp),
             )
 
-    def assessment_feedback_digest(self) -> list[tuple[str, str, int]]:
-        """Return privacy-safe counts for operator product review."""
+    def assessment_feedback_digest(
+        self,
+        *,
+        days: int = 30,
+        now: datetime | None = None,
+    ) -> list[tuple[str, str, int]]:
+        """Return privacy-safe counts for a bounded recent UTC window."""
 
+        earliest = _parse_timestamp(_bounded_window_start(days=days, now=now))
+        earliest_epoch = int(earliest.timestamp())
         return self.conn.execute(
             """SELECT original_tier, response, COUNT(*)
                FROM assessment_feedback
+               WHERE last_seen >= ?
                GROUP BY original_tier, response
-               ORDER BY original_tier, response"""
+               ORDER BY original_tier, response""",
+            (earliest_epoch,),
         ).fetchall()
 
     def recent_assessments(self, limit: int = 100) -> list[dict]:

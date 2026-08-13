@@ -399,6 +399,36 @@ class GuardianCopyMatchesBehaviour(unittest.TestCase):
         self.assertIn("possible miss", query.answers[0][0])
         self.assertIsNotNone(query.markup)
 
+    def test_owner_funnel_never_replies_outside_private_chat(self):
+        mod = _load_bot(None)
+        original_owner_id = mod.OWNER_ID
+        mod.OWNER_ID = 42
+        try:
+            group_message = self._message()
+            asyncio.run(mod.cmd_funnel(
+                types.SimpleNamespace(
+                    message=group_message,
+                    effective_user=types.SimpleNamespace(id=42),
+                    effective_chat=types.SimpleNamespace(type="group"),
+                ),
+                types.SimpleNamespace(),
+            ))
+            self.assertEqual(group_message.replies, [])
+
+            private_message = self._message()
+            asyncio.run(mod.cmd_funnel(
+                types.SimpleNamespace(
+                    message=private_message,
+                    effective_user=types.SimpleNamespace(id=42),
+                    effective_chat=types.SimpleNamespace(type="private"),
+                ),
+                types.SimpleNamespace(),
+            ))
+            self.assertEqual(len(private_message.replies), 1)
+            self.assertIn("last 30 UTC days", private_message.replies[0][0])
+        finally:
+            mod.OWNER_ID = original_owner_id
+
     def test_owner_liquidity_commands_are_registered(self):
         mod = _load_bot(None)
         callbacks = _registered_callbacks(mod)
