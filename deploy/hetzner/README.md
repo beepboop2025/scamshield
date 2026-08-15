@@ -209,14 +209,19 @@ message content.
 The review queue is not an automatic accusation feed. It excludes exact IOC
 values and message fragments and remains marked for human review.
 
-The Dragon Den service is a separate raw-publication lane. It accepts only
-public `@username` sources listed in the root-owned
-`/etc/scamshield/dragon-den-routes.json`, requires the dedicated bot to be an
-administrator in every source and destination, and stores only message
-coordinates in `/var/lib/scamshield/dragon-den/`. It is not enabled by the
-installer because BotFather credentials and channel administrator grants are
-operator actions. Follow [`docs/DRAGON_DEN.md`](../../docs/DRAGON_DEN.md) after
-the normal deployment is healthy.
+The preferred Dragon Den mode is an ungated raw-publication lane inside the
+Telethon monitor. It accepts only public `@username` sources explicitly listed
+in both `/etc/scamshield/channels.txt` and the root-owned
+`/etc/scamshield/dragon-den-routes.json`. The monitoring account reads the
+third-party sources; the dedicated bot needs post-only administrator rights in
+the destination channels, not in the sources. Only Telegram coordinates and
+delivery state live in `/var/lib/scamshield/dragon-den/`.
+
+Set `DRAGON_DEN_RELAY_ENABLED=1` only after routes, token, destination grants,
+and Telegram content protection are ready. Keep
+`scamshield-dragon-den.service` disabled; that unit is an alternative Bot API
+poller for the uncommon case where the bot administers every source. Follow
+[`docs/DRAGON_DEN.md`](../../docs/DRAGON_DEN.md) for activation and verification.
 
 The adjacent monitoring summary is a gated, aggregate-only private handoff for
 Palimpsest review and a future NarcoScope analyst import. It contains no source

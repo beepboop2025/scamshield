@@ -22,6 +22,25 @@ class _Collector:
         return ProcessOutcome("COMPLETE")
 
 
+class _Relay:
+    def __init__(self):
+        self.calls = []
+        self.failed = 0
+        self.raise_on_enqueue = False
+
+    def enqueue(self, source, message):
+        if self.raise_on_enqueue:
+            raise RuntimeError("outbox unavailable")
+        self.calls.append((source, message))
+        return ("receipt",)
+
+    def update_source_coverage(self, sources):
+        self.coverage = tuple(sources)
+
+    def status_text(self):
+        return "raw[pending=1]"
+
+
 class MonitorRuntimeTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.source = ResolvedSource(
@@ -41,7 +60,7 @@ class MonitorRuntimeTests(unittest.IsolatedAsyncioTestCase):
             message=types.SimpleNamespace(id=number),
         )
 
-    def _runtime(self, *, queue_size=1, workers=1):
+    def _runtime(self, *, queue_size=1, workers=1, relay=None):
         collector = _Collector()
         runtime = MonitorRuntime(
             client=types.SimpleNamespace(),
@@ -51,12 +70,14 @@ class MonitorRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 live_worker_count=workers,
             ),
             pseudonym_key="local-test-pseudonym-key-with-32-chars",
+            dragon_den_relay=relay,
         )
         runtime.sources_by_peer[self.source.peer_id] = self.source
         return runtime, collector
 
     async def test_full_live_queue_defers_without_blocking_dispatch(self):
-        runtime, collector = self._runtime()
+        relay = _Relay()
+        runtime, collector = self._runtime(relay=relay)
 
         await runtime._handle_message(self._event(1))
         await runtime._handle_message(self._event(2))
@@ -65,9 +86,22 @@ class MonitorRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.live_deferred, 1)
         self.assertEqual(runtime.live_queue.qsize(), 1)
         self.assertEqual(collector.calls, [])
+        self.assertEqual(len(relay.calls), 2)
         status = runtime.status_text()
+        self.assertIn("raw[pending=1]", status)
         self.assertNotIn(self.source.peer_id, status)
         self.assertNotIn(self.source.reference, status)
+
+    async def test_raw_outbox_failure_does_not_gate_analysis_queue(self):
+        relay = _Relay()
+        relay.raise_on_enqueue = True
+        runtime, _ = self._runtime(relay=relay)
+
+        await runtime._handle_message(self._event(3))
+
+        self.assertEqual(relay.failed, 1)
+        self.assertEqual(runtime.live_queue.qsize(), 1)
+        self.assertEqual(runtime.live_enqueued, 1)
 
     async def test_live_workers_drain_the_bounded_queue(self):
         runtime, collector = self._runtime(queue_size=4, workers=2)

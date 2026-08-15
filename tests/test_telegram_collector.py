@@ -132,6 +132,30 @@ class TelegramCollectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.source_cursor(self.source_key), (True, 7))
         self.assertEqual(self.store.coverage_digest()[0][2], 4)
 
+    async def test_history_observer_runs_before_analysis_and_includes_media_only(self):
+        client = _Client([
+            _Message(1, "ordinary update"),
+            _Message(2, ""),
+        ])
+        collector = TelegramCollector(
+            client=client,
+            store=self.store,
+            analyzer=self.analyzer,
+            settings=MonitorSettings(initial_history=2),
+            pseudonym_key=self.key,
+        )
+        observed = []
+
+        await collector.reconcile_source(
+            self.source,
+            before_process=lambda source, message: observed.append(
+                (source.reference, message.id)
+            ),
+        )
+
+        self.assertEqual(observed, [("@public_source", 1), ("@public_source", 2)])
+        self.assertEqual(self.store.source_cursor(self.source_key), (True, 2))
+
     async def test_live_receipt_does_not_jump_the_history_cursor(self):
         client = _Client([_Message(10, "ordinary update 10")])
         collector = TelegramCollector(

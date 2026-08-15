@@ -3,13 +3,18 @@
   "destinations": [
     {
       "id": "dragon-den",
-      "chat_id": "@whispers_from_the_dragon_den",
+      "chat_id": "@DragonDenWhispers",
       "label": "Whispers from the Dragon Den — all raw signals"
     },
     {
-      "id": "china-economy",
-      "chat_id": "@palimpsest_china_economy",
-      "label": "Palimpsest China economy — raw context"
+      "id": "cyber",
+      "chat_id": "@DragonDenCyber",
+      "label": "Dragon Den — cyber and technology raw signals"
+    },
+    {
+      "id": "borderlands",
+      "chat_id": "@DragonDenBorderlands",
+      "label": "Dragon Den — regional and borderlands raw signals"
     }
   ],
   "catch_all_destination_ids": [
@@ -18,9 +23,9 @@
   "sources": [
     {
       "source": "@replace_with_public_source",
-      "label": "Replace with a public source the bot administers",
+      "label": "Replace with a public source observed by the Telethon account",
       "destination_ids": [
-        "china-economy"
+        "cyber"
       ],
       "enabled": true
     }
