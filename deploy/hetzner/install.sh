@@ -33,6 +33,7 @@ install -d -o root -g root -m 0755 \
 install -d -o scamshield -g scamshield -m 2770 /var/lib/scamshield
 install -d -o scamshield -g scamshield-runtime -m 0700 \
   /var/lib/scamshield/telegram \
+  /var/lib/scamshield/dragon-den \
   /var/lib/scamshield/palimpsest-inbox \
   /var/lib/scamshield/review
 install -d -o scamshield -g intelligence-review -m 2750 \
@@ -113,6 +114,11 @@ if [[ ! -f /etc/scamshield/channels.txt ]]; then
   install -o root -g scamshield-runtime -m 0640 \
     "$channels_source" /etc/scamshield/channels.txt
 fi
+if [[ ! -f /etc/scamshield/dragon-den-routes.json ]]; then
+  install -o root -g scamshield-runtime -m 0640 \
+    /opt/scamshield/source/dragon-den-routes.example.json \
+    /etc/scamshield/dragon-den-routes.json
+fi
 
 target="$(git -C /opt/scamshield/source rev-parse origin/master)"
 bash /opt/scamshield/source/deploy/hetzner/update.sh "$target" --no-restart
@@ -144,9 +150,12 @@ was not restarted; on a fresh host the services remain stopped.
 Next:
   1. Edit /etc/scamshield/scamshield.env and keep it root:scamshield-runtime 0640.
   2. Confirm /etc/scamshield/channels.txt contains only public or authorized sources.
-  3. Retire any old poller using the same Bot API token.
-  4. systemctl enable --now scamshield-bot scamshield-feed.timer
-  5. Run /opt/scamshield/current/deploy/hetzner/authorize-monitor.sh once when
+  3. Edit /etc/scamshield/dragon-den-routes.json, then add the dedicated bot as
+     an administrator in every configured public source and destination channel.
+  4. Retire any old poller using either Bot API token.
+  5. systemctl enable --now scamshield-bot scamshield-feed.timer
+  6. Enable scamshield-dragon-den only after its dedicated token and routes are ready.
+  7. Run /opt/scamshield/current/deploy/hetzner/authorize-monitor.sh once when
      Telegram authorization is available. Until then the monitor stays disabled.
 
 The Telethon session will then live under /var/lib/scamshield and will not be
