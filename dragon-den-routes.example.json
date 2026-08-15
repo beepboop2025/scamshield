@@ -1,0 +1,28 @@
+{
+  "schema_version": "scamshield-dragon-den-routes/v1",
+  "destinations": [
+    {
+      "id": "dragon-den",
+      "chat_id": "@whispers_from_the_dragon_den",
+      "label": "Whispers from the Dragon Den — all raw signals"
+    },
+    {
+      "id": "china-economy",
+      "chat_id": "@palimpsest_china_economy",
+      "label": "Palimpsest China economy — raw context"
+    }
+  ],
+  "catch_all_destination_ids": [
+    "dragon-den"
+  ],
+  "sources": [
+    {
+      "source": "@replace_with_public_source",
+      "label": "Replace with a public source the bot administers",
+      "destination_ids": [
+        "china-economy"
+      ],
+      "enabled": true
+    }
+  ]
+}

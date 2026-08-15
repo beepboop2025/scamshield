@@ -77,6 +77,23 @@ The separate `monitor.py` process uses a dedicated Telethon account for
 configured public/authorized channels. Never use a personal Telegram account
 for hostile-source monitoring.
 
+## Raw public-channel mirror
+
+`dragon_den_bot.py` is a third, separately credentialed service named
+**Whispers from the Dragon Den**. When its dedicated bot is an administrator in
+configured public source channels, it forwards every new raw post into a
+mandatory catch-all destination and any source-specific topic destinations.
+Each native forward retains Telegram provenance and is preceded by a fixed
+unverified/malicious-content warning. Albums, edits, per-destination retries,
+and durable duplicate suppression are explicit parts of the contract.
+
+This raw Telegram lane never supplies the public website. ScamShield analyzes
+the same incoming text asynchronously and can place a private Evidence Capsule
+in Palimpsest's review inbox; only a later reviewed and sanitized projection is
+eligible for the website. Private chats, numeric/private source IDs, invite
+links, DMs, and user submissions are not accepted by the raw-mirror route
+schema. See [`docs/DRAGON_DEN.md`](docs/DRAGON_DEN.md).
+
 The public bot menu also exposes `/how`, `/typologies`, `/privacy`, `/explore`,
 and `/help`. Startup synchronizes the bot name, descriptions, and command menu
 with the shipped behavior. Set `EVIDENCE_CHANNEL_URL` after the shared
@@ -170,6 +187,10 @@ Useful optional settings:
 
 | Variable | Default | Purpose |
 |---|---:|---|
+| `DRAGON_DEN_BOT_TOKEN` | unset | Dedicated raw-mirror Bot API token; must differ from `SCAMSHIELD_TOKEN` |
+| `DRAGON_DEN_ROUTES_FILE` | `dragon-den-routes.json` | Strict public-source and multi-destination route registry |
+| `DRAGON_DEN_DB` | `dragon-den.db` | Private reference-only delivery outbox |
+| `DRAGON_DEN_PROTECT_CONTENT` | `1` | Prevent downstream forwarding/saving without changing raw content |
 | `SCAMSHIELD_GUARDIAN` | `0` | Enable administrator-authorized group mode |
 | `SCAMSHIELD_DB` | `scamshield.db` | Shared SQLite assessment/IOC/coverage store |
 | `SCAMSHIELD_SESSION` | `scamshield_monitor` in the repository | Persistent Telethon session base path |

@@ -62,6 +62,7 @@ if [[ ! -f "$scam_release/.deploy-ready" ]]; then
     -s "$scam_release/tests" -v
   "$scam_release/.venv/bin/python" -m compileall -q \
     "$scam_release/scamshield" "$scam_release/bot.py" \
+    "$scam_release/dragon_den_bot.py" \
     "$scam_release/monitor.py" "$scam_release/login.py" \
     "$scam_release/export_monitoring_summary.py" \
     "$scam_release/manage_sources.py"
@@ -99,11 +100,15 @@ old_scam="$(readlink -f "$scam_current" 2>/dev/null || true)"
 old_pal="$(readlink -f "$pal_current" 2>/dev/null || true)"
 bot_was_active=0
 monitor_was_active=0
+dragon_was_active=0
 if systemctl is-active --quiet scamshield-bot.service; then
   bot_was_active=1
 fi
 if systemctl is-active --quiet scamshield-monitor.service; then
   monitor_was_active=1
+fi
+if systemctl is-active --quiet scamshield-dragon-den.service; then
+  dragon_was_active=1
 fi
 
 atomic_link() {
@@ -120,6 +125,7 @@ install_runtime_contract() {
     "$release/deploy/hetzner/deploy-wrapper.sh" \
     /usr/local/sbin/scamshield-deploy-wrapper
   for unit in scamshield-bot.service scamshield-monitor.service \
+              scamshield-dragon-den.service \
               scamshield-feed.service scamshield-feed.timer; do
     install -o root -g root -m 0644 \
       "$release/deploy/hetzner/$unit" "/etc/systemd/system/$unit"
@@ -151,6 +157,9 @@ rollback() {
   if (( monitor_was_active )); then
     systemctl restart scamshield-monitor.service || true
   fi
+  if (( dragon_was_active )); then
+    systemctl restart scamshield-dragon-den.service || true
+  fi
   exit 1
 }
 
@@ -164,6 +173,7 @@ if [[ "$mode" != "--no-restart" ]]; then
   started_at="$(date --iso-8601=seconds)"
   (( bot_was_active )) && systemctl restart scamshield-bot.service
   (( monitor_was_active )) && systemctl restart scamshield-monitor.service
+  (( dragon_was_active )) && systemctl restart scamshield-dragon-den.service
   systemctl enable --now scamshield-feed.timer >/dev/null
   systemctl enable --now scamshield-source-expansion.timer >/dev/null
   sleep 8
@@ -175,10 +185,20 @@ if [[ "$mode" != "--no-restart" ]]; then
       ! systemctl is-active --quiet scamshield-monitor.service; then
     rollback
   fi
+  if (( dragon_was_active )) && \
+      ! systemctl is-active --quiet scamshield-dragon-den.service; then
+    rollback
+  fi
   if (( bot_was_active )) && journalctl -u scamshield-bot.service \
       --since "$started_at" --no-pager 2>/dev/null | \
       grep -Eqi 'Conflict.*getUpdates|terminated by other getUpdates'; then
     echo "a competing Bot API poller was detected" >&2
+    rollback
+  fi
+  if (( dragon_was_active )) && journalctl -u scamshield-dragon-den.service \
+      --since "$started_at" --no-pager 2>/dev/null | \
+      grep -Eqi 'Conflict.*getUpdates|terminated by other getUpdates'; then
+    echo "a competing Dragon Den Bot API poller was detected" >&2
     rollback
   fi
 fi
@@ -189,6 +209,11 @@ if (( monitor_was_active )); then
   monitor_status="$(systemctl show scamshield-monitor.service \
     --property=StatusText --value 2>/dev/null || true)"
   echo "ScamShield monitor: ${monitor_status:-status unavailable}"
+fi
+if (( dragon_was_active )); then
+  dragon_status="$(systemctl show scamshield-dragon-den.service \
+    --property=SubState --value 2>/dev/null || true)"
+  echo "Dragon Den raw mirror: ${dragon_status:-status unavailable}"
 fi
 if [[ "$mode" == "--no-restart" ]]; then
   echo "Services were not started; complete /etc/scamshield/scamshield.env first."

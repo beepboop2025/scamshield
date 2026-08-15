@@ -19,6 +19,7 @@ GitHub master push
 
 Hetzner
   scamshield-bot.service      Bot API private submissions / authorized groups
+  scamshield-dragon-den.service  raw public-channel fan-out under a dedicated bot
   scamshield-monitor.service  configured public or operator-authorized sources
   scamshield-feed.timer       privacy-minimized, human-review-only artifacts
   scamshield-source-expansion.timer  bounded verified-public-source promotion
@@ -207,6 +208,15 @@ message content.
 
 The review queue is not an automatic accusation feed. It excludes exact IOC
 values and message fragments and remains marked for human review.
+
+The Dragon Den service is a separate raw-publication lane. It accepts only
+public `@username` sources listed in the root-owned
+`/etc/scamshield/dragon-den-routes.json`, requires the dedicated bot to be an
+administrator in every source and destination, and stores only message
+coordinates in `/var/lib/scamshield/dragon-den/`. It is not enabled by the
+installer because BotFather credentials and channel administrator grants are
+operator actions. Follow [`docs/DRAGON_DEN.md`](../../docs/DRAGON_DEN.md) after
+the normal deployment is healthy.
 
 The adjacent monitoring summary is a gated, aggregate-only private handoff for
 Palimpsest review and a future NarcoScope analyst import. It contains no source

@@ -3,8 +3,8 @@ set -euo pipefail
 
 component="${1:-}"
 case "$component" in
-  bot|monitor) ;;
-  *) echo "usage: $0 bot|monitor" >&2; exit 64 ;;
+  bot|monitor|dragon-den) ;;
+  *) echo "usage: $0 bot|monitor|dragon-den" >&2; exit 64 ;;
 esac
 
 fail() {
@@ -14,6 +14,29 @@ fail() {
 
 [[ "${SCAMSHIELD_STORE_RAW_SAMPLES:-0}" == "0" ]] || \
   fail "raw sample storage must remain disabled in production"
+
+if [[ "$component" == "dragon-den" ]]; then
+  token="${DRAGON_DEN_BOT_TOKEN:-}"
+  [[ "$token" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]] || \
+    fail "DRAGON_DEN_BOT_TOKEN is missing or malformed"
+  [[ -z "${SCAMSHIELD_TOKEN:-}" || "$token" != "${SCAMSHIELD_TOKEN}" ]] || \
+    fail "the Dragon Den bot must use a dedicated Bot API token"
+  [[ "${DRAGON_DEN_PROTECT_CONTENT:-1}" =~ ^[01]$ ]] || \
+    fail "DRAGON_DEN_PROTECT_CONTENT must be 0 or 1"
+  routes="${DRAGON_DEN_ROUTES_FILE:-/etc/scamshield/dragon-den-routes.json}"
+  [[ -r "$routes" ]] || fail "Dragon Den route registry is unreadable"
+  dragon_db="${DRAGON_DEN_DB:-/var/lib/scamshield/dragon-den/dragon-den.db}"
+  [[ -d "$(dirname "$dragon_db")" && -w "$(dirname "$dragon_db")" ]] || \
+    fail "Dragon Den database parent is not writable"
+  /opt/scamshield/current/.venv/bin/python - "$routes" <<'PY' || \
+    fail "Dragon Den route registry is invalid"
+import sys
+from scamshield.dragon_den import load_routes
+load_routes(sys.argv[1])
+PY
+  exit 0
+fi
+
 pseudonym_key="${SCAMSHIELD_PSEUDONYM_KEY:-}"
 [[ ${#pseudonym_key} -ge 32 ]] || \
   fail "SCAMSHIELD_PSEUDONYM_KEY is missing or too short"
