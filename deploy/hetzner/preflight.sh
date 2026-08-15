@@ -15,7 +15,7 @@ fail() {
 [[ "${SCAMSHIELD_STORE_RAW_SAMPLES:-0}" == "0" ]] || \
   fail "raw sample storage must remain disabled in production"
 
-if [[ "$component" == "dragon-den" ]]; then
+check_dragon_den() {
   token="${DRAGON_DEN_BOT_TOKEN:-}"
   [[ "$token" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]] || \
     fail "DRAGON_DEN_BOT_TOKEN is missing or malformed"
@@ -34,6 +34,16 @@ import sys
 from scamshield.dragon_den import load_routes
 load_routes(sys.argv[1])
 PY
+}
+
+relay_enabled="${DRAGON_DEN_RELAY_ENABLED:-0}"
+[[ "$relay_enabled" =~ ^[01]$ ]] || \
+  fail "DRAGON_DEN_RELAY_ENABLED must be 0 or 1"
+
+if [[ "$component" == "dragon-den" ]]; then
+  [[ "$relay_enabled" == "0" ]] || \
+    fail "standalone bot service must stay disabled when the Telethon relay is enabled"
+  check_dragon_den
   exit 0
 fi
 
@@ -48,6 +58,10 @@ pseudonym_key="${SCAMSHIELD_PSEUDONYM_KEY:-}"
 db="${SCAMSHIELD_DB:-/var/lib/scamshield/scamshield.db}"
 [[ -d "$(dirname "$db")" && -w "$(dirname "$db")" ]] || \
   fail "database parent is not writable"
+
+if [[ "$component" == "monitor" && "$relay_enabled" == "1" ]]; then
+  check_dragon_den
+fi
 
 if [[ "$component" == "bot" ]]; then
   [[ "${SCAMSHIELD_TOKEN:-}" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]] || \

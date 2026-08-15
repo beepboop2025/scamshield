@@ -150,11 +150,13 @@ was not restarted; on a fresh host the services remain stopped.
 Next:
   1. Edit /etc/scamshield/scamshield.env and keep it root:scamshield-runtime 0640.
   2. Confirm /etc/scamshield/channels.txt contains only public or authorized sources.
-  3. Edit /etc/scamshield/dragon-den-routes.json, then add the dedicated bot as
-     an administrator in every configured public source and destination channel.
+  3. Edit /etc/scamshield/dragon-den-routes.json. For Telethon relay mode, add
+     the dedicated bot as a post-only administrator in every destination; the
+     authenticated monitor account observes the configured public sources.
   4. Retire any old poller using either Bot API token.
   5. systemctl enable --now scamshield-bot scamshield-feed.timer
-  6. Enable scamshield-dragon-den only after its dedicated token and routes are ready.
+  6. For third-party sources, set DRAGON_DEN_RELAY_ENABLED=1 and keep the
+     standalone scamshield-dragon-den service disabled.
   7. Run /opt/scamshield/current/deploy/hetzner/authorize-monitor.sh once when
      Telegram authorization is available. Until then the monitor stays disabled.
 

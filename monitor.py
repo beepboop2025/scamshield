@@ -26,6 +26,8 @@ from telethon import TelegramClient, errors, events, types, utils
 from telethon.tl.functions.channels import JoinChannelRequest
 
 from scamshield.analysis import AnalysisService, ObservationContext
+from scamshield.dragon_den import DragonDenError
+from scamshield.dragon_den_relay import DragonDenTelethonRelay
 from scamshield.envload import load_env
 from scamshield.iocstore import IocStore
 from scamshield.runtime import channels_file_path, session_base_path
@@ -74,16 +76,18 @@ class MonitorRuntime:
         collector: TelegramCollector,
         settings: MonitorSettings,
         pseudonym_key: str,
+        dragon_den_relay: DragonDenTelethonRelay | None = None,
     ):
         self.client = client
         self.collector = collector
         self.settings = settings
         self.pseudonym_key = pseudonym_key
+        self.dragon_den_relay = dragon_den_relay
         self.sources_by_reference: dict[str, ResolvedSource] = {}
         self.sources_by_peer: dict[str, ResolvedSource] = {}
         self.failed_references: set[str] = set()
         self._handler = self._handle_message
-        self._event_builder = None
+        self._event_builders: list[object] = []
         self.live_queue: asyncio.Queue[tuple[ResolvedSource, object]] = asyncio.Queue(
             maxsize=settings.live_queue_size
         )
@@ -238,6 +242,8 @@ class MonitorRuntime:
             )
         if set(self.sources_by_peer) != previous_peers:
             self._replace_event_handler()
+        if self.dragon_den_relay is not None:
+            self.dragon_den_relay.update_source_coverage(self.sources)
         if not self.sources_by_peer:
             log.warning("no configured Telegram sources are currently resolved")
 
@@ -305,14 +311,17 @@ class MonitorRuntime:
         return checked
 
     def _replace_event_handler(self) -> None:
-        if self._event_builder is not None:
-            self.client.remove_event_handler(self._handler, self._event_builder)
-            self._event_builder = None
+        for builder in self._event_builders:
+            self.client.remove_event_handler(self._handler, builder)
+        self._event_builders = []
         if self.sources_by_peer:
-            self._event_builder = events.NewMessage(
-                chats=[source.entity for source in self.sources_by_peer.values()]
-            )
-            self.client.add_event_handler(self._handler, self._event_builder)
+            chats = [source.entity for source in self.sources_by_peer.values()]
+            self._event_builders = [
+                events.NewMessage(chats=chats),
+                events.MessageEdited(chats=chats),
+            ]
+            for builder in self._event_builders:
+                self.client.add_event_handler(self._handler, builder)
 
     def status_text(self) -> str:
         """Return a bounded, identity-free operational summary."""
@@ -322,7 +331,7 @@ class MonitorRuntime:
             if self.reconcile_failure_streak or self.candidate_failure_streak
             else "connected"
         )
-        return (
+        status = (
             f"{condition}; sources={len(self.sources)}; "
             f"unresolved={len(self.failed_references)}; "
             f"live_queue={self.live_queue.qsize()}/{self.live_queue.maxsize}; "
@@ -332,6 +341,9 @@ class MonitorRuntime:
             f"candidates_checked={self.last_candidates_checked}; "
             f"candidate_failure_streak={self.candidate_failure_streak}"
         )
+        if self.dragon_den_relay is not None:
+            status = f"{status}; {self.dragon_den_relay.status_text()}"
+        return status
 
     def publish_status(self, *, ready: bool = False, watchdog: bool = False) -> None:
         """Publish aggregate health to SQLite and systemd."""
@@ -368,10 +380,25 @@ class MonitorRuntime:
         notifications.append(f"STATUS={self.status_text()}")
         notify_systemd("\n".join(notifications))
 
+    def enqueue_raw(self, source: ResolvedSource, message: object) -> None:
+        """Best-effort raw enqueue that never gates the analysis path."""
+
+        if self.dragon_den_relay is not None:
+            try:
+                self.dragon_den_relay.enqueue(source, message)
+            except Exception as exc:
+                self.dragon_den_relay.failed += 1
+                log.warning(
+                    "raw relay enqueue failed for source %s (%s)",
+                    source.source_key,
+                    type(exc).__name__,
+                )
+
     async def _handle_message(self, event) -> None:
         source = self.sources_by_peer.get(str(event.chat_id))
         if source is None:
             return
+        self.enqueue_raw(source, event.message)
         try:
             self.live_queue.put_nowait((source, event))
             self.live_enqueued += 1
@@ -455,7 +482,10 @@ class MonitorRuntime:
 async def reconciliation_loop(runtime: MonitorRuntime) -> None:
     while True:
         try:
-            outcome = await runtime.collector.reconcile_sources(runtime.sources)
+            outcome = await runtime.collector.reconcile_sources(
+                runtime.sources,
+                before_process=runtime.enqueue_raw,
+            )
         except Exception as exc:
             runtime.reconcile_failure_streak += 1
             log.exception("history reconciliation failed (%s)", type(exc).__name__)
@@ -545,11 +575,19 @@ async def main() -> None:
         store_raw_samples=store_raw_samples,
         logger=log,
     )
+    try:
+        dragon_den_relay = DragonDenTelethonRelay.from_environment(
+            client,
+            logger=log,
+        )
+    except DragonDenError as exc:
+        raise SystemExit(str(exc)) from exc
     runtime = MonitorRuntime(
         client=client,
         collector=collector,
         settings=settings,
         pseudonym_key=pseudonym_key,
+        dragon_den_relay=dragon_den_relay,
     )
 
     tasks: list[asyncio.Task] = []
@@ -560,6 +598,8 @@ async def main() -> None:
                 "Saved Telegram session is unauthorized. Run authorize-monitor.sh once."
             )
         await runtime.refresh_sources()
+        if runtime.dragon_den_relay is not None:
+            await runtime.dragon_den_relay.start()
         # Telethon explicitly requires handlers to be registered before this
         # call, otherwise missed updates are fetched but not processed.
         tasks = runtime.start_live_workers()
@@ -589,6 +629,8 @@ async def main() -> None:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        if runtime.dragon_den_relay is not None:
+            await runtime.dragon_den_relay.shutdown()
         if client.is_connected():
             await client.disconnect()
         store.close()

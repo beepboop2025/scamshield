@@ -1,67 +1,86 @@
 # Whispers from the Dragon Den
 
-`dragon_den_bot.py` is a dedicated Telegram Bot API service that mirrors every
-new post from an explicit public-channel allowlist into one or more destination
-channels. Destination content is raw and automatically forwarded. It is not
-reviewed, verified, corrected, endorsed, or used as evidence by Palimpsest.
+Whispers is ScamShield's ungated Telegram publication lane for explicit public
+sources. The main feed is [@DragonDenWhispers](https://t.me/DragonDenWhispers),
+with topic feeds at [@DragonDenCyber](https://t.me/DragonDenCyber) and
+[@DragonDenBorderlands](https://t.me/DragonDenBorderlands). All three are raw,
+automatic, and unverified. Reviewed and sanitized interpretation belongs on
+Palimpsest's `/news/china/whispers/` surface.
 
-This is deliberately a different publication lane from Palimpsest's website:
+The word *ungated* is precise: once the authenticated monitor receives an
+enabled public-source event, its Telegram coordinates enter the Dragon Den
+outbox before the separate analysis queue. A classifier result, rate lookup,
+Palimpsest bridge, review decision, or full analysis queue cannot suppress or
+rewrite the raw forward.
+
+## Architecture
 
 ```text
-public Telegram source channel
-  -> dedicated Dragon Den bot receives channel_post
-  -> private reference-only SQLite outbox
-  -> mandatory warning to each destination
-  -> native Telegram forward (raw text/media + original attribution)
+configured public Telegram channel
+  -> authenticated monitor.py Telethon user session
+  -> reference-only DragonDenOutbox (enqueue first)
+  -> dedicated bot posts a mandatory unverified-content receipt
+  -> Telethon native forward preserves Telegram source attribution and albums
+  -> catch-all destination + zero or more topic destinations
 
-same incoming post
-  -> asynchronous ScamShield classification
-  -> private Palimpsest Evidence Capsule when policy threshold is met
-  -> human review / deterministic sanitizer
-  -> sanitized Palimpsest Whispers tab
+same source event
+  -> bounded ScamShield analysis queue
+  -> private evidence capsule when policy thresholds are met
+  -> review + deterministic sanitization
+  -> Palimpsest website
 ```
 
-ScamShield analysis starts only after raw delivery has been queued. A detector,
-rate provider, or Palimpsest bridge failure cannot suppress or modify a raw
-forward.
+This design is necessary because a Bot API bot cannot subscribe to arbitrary
+third-party public channels. The already-authorized Telethon user session can
+observe those channels and native-forward their posts. The dedicated bot is
+the visible warning/publisher identity and needs only post-message rights in
+the destination channels.
 
-## What “everything raw” means
+`dragon_den_bot.py` remains an alternative standalone Bot API poller for the
+special case where the bot itself administers every source. It must stay
+disabled when `DRAGON_DEN_RELAY_ENABLED=1`.
 
-The bot attempts every new or edited post of any kind that Telegram delivers
-from every enabled source in the route registry. Native forwarding preserves
-the original source attribution, text, caption, entities, media, poll, and
-other Telegram-supported content. `forwardMessages` preserves media-album
-grouping.
+## What “everything raw” guarantees
 
-The promise is complete across the declared, accessible sources after
-activation—not all Telegram and not an infinite historical scrape. Telegram
-does not expose a universal firehose. In particular:
+For each enabled route, the relay attempts every new message Telegram delivers,
+including media-only posts, captions, polls, documents, links, and grouped
+albums. Source edits get a distinct `SOURCE EDIT` receipt. A mandatory warning
+appears before each forward batch and links to the original public post.
 
-- the bot must be an administrator in each source and destination channel;
-- a source must have a public `@username`; private chats, invite links, numeric
-  source IDs, DMs, user submissions, and closed groups are rejected by schema;
-- Telegram does not forward protected content or some service messages; the
-  bot publishes an explicit tombstone and does not copy or download around the
-  restriction;
-- Bot API pending updates are finite, so a sufficiently long outage can create
-  a gap; systemd restarts the service and the private outbox survives releases;
-- edited posts receive a new `SOURCE EDIT` receipt; Telegram does not provide a
-  general deleted-channel-post update, so source deletions cannot be mirrored
-  reliably;
-- a crash after Telegram accepts a forward but before SQLite records success
-  can produce a duplicate. The stable receipt printed before each forward makes
-  that narrow ambiguity visible and operator-deduplicable.
+Live enqueue happens synchronously before analysis dispatch. The monitor's
+durable history reconciliation uses the same enqueue callback, so ordinary
+restart or connectivity gaps are recovered without depending on the analysis
+result. A newly initialized source uses the bounded
+`SCAMSHIELD_INITIAL_HISTORY` window; an existing source resumes from its durable
+collector cursor. Completeness therefore begins at activation/that bounded
+window, not at the channel's creation and not across all of Telegram.
 
-Every forward is preceded by a non-configurable warning that says the material
-may be false, incomplete, manipulated, illegal, or malicious and should not be
-treated as evidence. A disclaimer does not convert a private source into a
-public one; that is why the source schema itself is public-only.
+The following are explicit limits, not filters:
+
+- only public `@username` sources listed in both the monitor registry and the
+  Dragon Den route registry are eligible;
+- Telegram offers no universal firehose, and the relay does not discover or
+  join sources automatically for publication;
+- private channels, groups without a public username, DMs, invite links,
+  numeric source IDs, and user submissions are ignored by the raw lane;
+- if a source protects forwarding, deletes a post, or makes it unavailable,
+  the destination receives an `UNFORWARDABLE` tombstone; the relay does not
+  download, copy, or bypass the restriction;
+- source deletions do not have a reliable universal recovery update;
+- after Telegram accepts a forward but before SQLite commits success, a crash
+  can create a duplicate. Stable receipts make that narrow ambiguity visible;
+- each destination retries independently, so one unavailable topic channel
+  cannot roll back the catch-all delivery.
+
+No message text, caption, media, extracted IOC, username allegation, or copied
+file is written to the Dragon Den database. It contains source/destination
+coordinates, message IDs, receipt IDs, retry state, and destination message
+IDs. Telegram remains the raw-content store.
 
 ## Route registry
 
-Copy `dragon-den-routes.example.json` to the production path and replace its
-placeholders. A catch-all destination receives every source. Each source may
-also fan out to any number of topic destinations:
+`/etc/scamshield/dragon-den-routes.json` is root-owned, strict JSON. The
+catch-all destination receives every enabled source; topic IDs add fan-out:
 
 ```json
 {
@@ -69,100 +88,120 @@ also fan out to any number of topic destinations:
   "destinations": [
     {
       "id": "dragon-den",
-      "chat_id": "@whispers_from_the_dragon_den",
-      "label": "All raw signals"
+      "chat_id": "@DragonDenWhispers",
+      "label": "Whispers from the Dragon Den — all raw signals"
     },
     {
-      "id": "china-economy",
-      "chat_id": "@palimpsest_china_economy",
-      "label": "China economy raw context"
+      "id": "cyber",
+      "chat_id": "@DragonDenCyber",
+      "label": "Cyber and technology — raw signals"
+    },
+    {
+      "id": "borderlands",
+      "chat_id": "@DragonDenBorderlands",
+      "label": "Regional and borderlands — raw signals"
     }
   ],
   "catch_all_destination_ids": ["dragon-den"],
   "sources": [
     {
-      "source": "@public_source_name",
-      "label": "Public source name",
-      "destination_ids": ["china-economy"],
+      "source": "@falconfeedsio",
+      "label": "FalconFeeds",
+      "destination_ids": ["cyber"],
+      "enabled": true
+    },
+    {
+      "source": "@bbcnewsburmese",
+      "label": "BBC News Burmese",
+      "destination_ids": ["borderlands"],
       "enabled": true
     }
   ]
 }
 ```
 
-Unknown fields, duplicate routes, missing destinations, numeric/private
-sources, invite links, and an empty enabled-source list fail startup. One
-destination failure is retried independently and does not roll back successful
-delivery to another destination.
+Unknown fields, duplicate keys/routes, missing destinations, invite links,
+numeric/private sources, and an empty enabled-source list fail preflight. A
+route source absent from the resolved monitor set is reported only as an
+aggregate `missing_routes` count in systemd status; identities never enter
+status text or logs.
 
-## BotFather and channel setup
+## Telegram setup
 
-Create a new bot specifically for this service. Do not reuse
-`SCAMSHIELD_TOKEN`: Telegram allows only one `getUpdates` poller for a bot
-token.
-
-For every source channel:
-
-1. Give the channel a public `@username`.
-2. Add the Dragon Den bot as an administrator so Telegram delivers
-   `channel_post` and `edited_channel_post` updates.
-3. Add that exact `@username` to the source registry.
-
+Use a bot created specifically for Dragon Den; never reuse `SCAMSHIELD_TOKEN`.
 For every destination channel:
 
-1. Add the Dragon Den bot as an administrator.
-2. Grant permission to post messages.
-3. Add the public `@username` or numeric `-100…` destination ID to the registry.
+1. Make the channel public and record its exact `@username` in the route file.
+2. Add `@DragonDenWhispersBot` as an administrator.
+3. Grant **Post Messages** only. Do not grant edit, delete, subscriber, or
+   administrator-management rights.
+4. Enable **Restrict Saving Content** in the channel itself. Bot API
+   `protect_content` covers warning messages, while the channel setting covers
+   the Telethon-native forwards.
+5. Publish the permanent feed-level disclaimer. Per-forward receipts remain
+   mandatory even when that disclaimer is pinned.
 
-The service validates administrator access to every configured source and
-destination before declaring itself ready.
+The Telethon monitoring account must be able to read every configured public
+source and must own or have post rights in every destination. The dedicated bot
+does not need administrator access to third-party sources.
 
 ## Production activation
 
-On the Hetzner host, edit the root-owned environment and routing files without
-printing the token in logs or shell history:
-
-```bash
-sudoedit /etc/scamshield/scamshield.env
-sudoedit /etc/scamshield/dragon-den-routes.json
-sudo chown root:scamshield-runtime \
-  /etc/scamshield/scamshield.env \
-  /etc/scamshield/dragon-den-routes.json
-sudo chmod 0640 \
-  /etc/scamshield/scamshield.env \
-  /etc/scamshield/dragon-den-routes.json
-sudo systemctl enable --now scamshield-dragon-den.service
-```
-
-Required environment:
+Required environment in `/etc/scamshield/scamshield.env`:
 
 ```text
+DRAGON_DEN_RELAY_ENABLED=1
 DRAGON_DEN_BOT_TOKEN=<dedicated BotFather token>
 DRAGON_DEN_ROUTES_FILE=/etc/scamshield/dragon-den-routes.json
 DRAGON_DEN_DB=/var/lib/scamshield/dragon-den/dragon-den.db
 DRAGON_DEN_PROTECT_CONTENT=1
 ```
 
-`DRAGON_DEN_PROTECT_CONTENT=1` keeps the forwarded content visible but prevents
-downstream forwarding and saving. Set it to `0` only if the destination is
-intended to be a reshareable raw feed. This setting does not sanitize or alter
-the forwarded post.
-
-## Operations
+Write the token through a secret-safe terminal or configuration channel; do not
+put it in a commit, command argument, CI variable echo, or shell history. Keep
+both files `root:scamshield-runtime` and mode `0640`:
 
 ```bash
-systemctl status scamshield-dragon-den.service
-journalctl -u scamshield-dragon-den.service --since today
+chown root:scamshield-runtime \
+  /etc/scamshield/scamshield.env \
+  /etc/scamshield/dragon-den-routes.json
+chmod 0640 \
+  /etc/scamshield/scamshield.env \
+  /etc/scamshield/dragon-den-routes.json
+systemctl disable --now scamshield-dragon-den.service
+systemctl restart scamshield-monitor.service
+```
+
+The monitor preflight validates the dedicated token shape, route schema,
+reference-only database directory, authorized Telethon session, and all normal
+ScamShield production invariants. At runtime the relay verifies the monitoring
+account can post to every destination before declaring the monitor ready.
+
+## Operations and proof
+
+```bash
+systemctl is-active scamshield-monitor.service
+systemctl is-enabled scamshield-dragon-den.service
+systemctl show scamshield-monitor.service --property=StatusText --value
+journalctl -u scamshield-monitor.service --since today --no-pager
 sudo -u scamshield sqlite3 /var/lib/scamshield/dragon-den/dragon-den.db \
   'SELECT status, COUNT(*) FROM deliveries GROUP BY status;'
 ```
 
-Expected terminal states are `COMPLETE` and `UNFORWARDABLE`. `RETRY` represents
-a recoverable Telegram/rate-limit failure; `DEAD` means the bounded retry budget
-was exhausted and requires operator inspection. Logs include stable receipt and
-route IDs, never message bodies, Telegram bot tokens, or private analysis.
+Expected terminal outbox states are:
 
-The database is purposefully isolated from `scamshield.db`. It stores source
-and destination Telegram coordinates, message IDs, delivery states, and
-destination message IDs, but no raw text, caption, media, exact IOC extraction,
-or private Palimpsest artifact.
+- `COMPLETE`: Telegram accepted the warning and native forward;
+- `UNFORWARDABLE`: Telegram permanently refused the source forward and a
+  tombstone was attempted;
+- `RETRY`: a rate limit or transient Telegram/network failure is waiting;
+- `DEAD`: twelve bounded attempts were exhausted and require inspection.
+
+Status resembles
+`raw[complete=…;routes=11/11;missing_routes=0;enqueued=…;completed=…]`.
+It contains aggregate counts only. Logs record error classes and source
+pseudonyms, never message bodies, bot tokens, public handles, exact IOCs, or
+private analysis artifacts.
+
+If the bot cannot post a warning temporarily, the authorized monitor session
+posts the same warning and continues the raw forward. That fallback is what
+makes the dedicated bot transport non-gating without weakening the disclaimer.

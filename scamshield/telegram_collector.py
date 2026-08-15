@@ -7,7 +7,7 @@ import logging
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from .analysis import AnalysisResult, AnalysisService, ObservationContext
 from .iocstore import IocStore
@@ -217,7 +217,12 @@ class TelegramCollector:
                 )
             return ProcessOutcome("FAILED")
 
-    async def reconcile_source(self, source: ResolvedSource) -> int:
+    async def reconcile_source(
+        self,
+        source: ResolvedSource,
+        *,
+        before_process: Callable[[ResolvedSource, Any], None] | None = None,
+    ) -> int:
         """Fill one bounded history gap without letting live traffic skip it."""
 
         processed = 0
@@ -249,6 +254,8 @@ class TelegramCollector:
 
             if hasattr(candidates, "__aiter__"):
                 async for message in candidates:
+                    if before_process is not None:
+                        before_process(source, message)
                     async with self._lock(source.source_key):
                         outcome = await self._process(source, message)
                         if outcome.status == "COMPLETE":
@@ -260,6 +267,8 @@ class TelegramCollector:
                     processed += 1
             else:
                 for message in candidates:
+                    if before_process is not None:
+                        before_process(source, message)
                     async with self._lock(source.source_key):
                         outcome = await self._process(source, message)
                         if outcome.status == "COMPLETE":
@@ -272,7 +281,10 @@ class TelegramCollector:
         return processed
 
     async def reconcile_sources(
-        self, sources: Iterable[ResolvedSource],
+        self,
+        sources: Iterable[ResolvedSource],
+        *,
+        before_process: Callable[[ResolvedSource, Any], None] | None = None,
     ) -> ReconcileOutcome:
         """Reconcile independent sources concurrently under a bounded gate."""
 
@@ -281,7 +293,10 @@ class TelegramCollector:
         async def reconcile_one(source: ResolvedSource) -> tuple[int, int]:
             try:
                 async with gate:
-                    return await self.reconcile_source(source), 0
+                    return await self.reconcile_source(
+                        source,
+                        before_process=before_process,
+                    ), 0
             except Exception as exc:
                 # Preserve the original Telegram/reconciliation exception in
                 # logs even when the database is also temporarily unavailable.
