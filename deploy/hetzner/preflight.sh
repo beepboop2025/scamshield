@@ -78,11 +78,13 @@ check_social_collection() {
      "$(stat -c '%a:%U:%G' "$social_output")" == \
      "2750:scamshield-social-export:caddy" ]] || \
     fail "social export directory ownership/mode is invalid"
-  social_generations="$social_output/generations"
-  [[ -d "$social_generations" && ! -L "$social_generations" && \
-     "$(stat -c '%a:%U:%G' "$social_generations")" == \
-     "2750:scamshield-social-export:caddy" ]] || \
-    fail "social export generations ownership/mode is invalid"
+  if [[ "$component" == "social-export" ]]; then
+    social_generations="$social_output/generations"
+    [[ -d "$social_generations" && ! -L "$social_generations" && \
+       "$(stat -c '%a:%U:%G' "$social_generations")" == \
+       "2750:scamshield-social-export:caddy" ]] || \
+      fail "social export generations ownership/mode is invalid"
+  fi
   if [[ "$component" == "monitor" ]]; then
     [[ -w "$social_db_parent" ]] || \
       fail "monitor cannot write the private social database parent"

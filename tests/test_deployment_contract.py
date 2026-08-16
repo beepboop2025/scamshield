@@ -170,6 +170,11 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn("/var/lib/scamshield/social-observations.db", preflight)
         self.assertIn("validate_public_registry_projection", preflight)
         self.assertIn("750:root:scamshield-runtime", preflight)
+        self.assertIn(
+            'if [[ "$component" == "social-export" ]]; then\n'
+            '    social_generations="$social_output/generations"',
+            preflight,
+        )
 
     def test_social_exporter_has_a_separate_uid_and_monitor_cannot_write_its_tree(self):
         exporter = (
