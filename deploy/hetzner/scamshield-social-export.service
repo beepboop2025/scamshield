@@ -6,7 +6,6 @@ After=scamshield-monitor.service
 Type=oneshot
 User=scamshield-social-export
 Group=scamshield-social
-SupplementaryGroups=scamshield-runtime
 WorkingDirectory=/opt/scamshield/current
 EnvironmentFile=/etc/scamshield/scamshield.env
 Environment=PYTHONDONTWRITEBYTECODE=1

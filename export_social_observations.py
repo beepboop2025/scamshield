@@ -38,7 +38,18 @@ def _load_hmac_key() -> bytes:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 4096:
             raise SocialObservationError("social export signing credential is invalid")
-        value = os.read(descriptor, 4097).strip()
+        chunks: list[bytes] = []
+        remaining = 4097
+        while remaining:
+            chunk = os.read(descriptor, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw_value = b"".join(chunks)
+        if len(raw_value) > 4096:
+            raise SocialObservationError("social export signing credential is invalid")
+        value = raw_value.strip()
     finally:
         os.close(descriptor)
     if len(value) < 32:
@@ -102,10 +113,14 @@ def main() -> int:
         # failures before the atomic switch.
         print("social observation export switched current; durability confirmation failed")
         return 1
+    except SocialObservationError as exc:
+        # These messages are deliberately written without native identities or
+        # credential contents, so they are safe and useful in the operator log.
+        print(f"social observation export preserved last good: {exc}")
+        return 1
     except Exception as exc:  # noqa: BLE001 - preserve last good on pre-commit failure
-        # Errors are intentionally identity- and credential-free.  Crucially,
-        # publication happens only after the complete replacement validates,
-        # so an existing ``current`` bundle remains the last known good.
+        # Never echo unexpected exception messages: they may contain paths or
+        # input data. Publication has not switched ``current`` on this path.
         print(f"social observation export preserved last good: {type(exc).__name__}")
         return 1
     finally:

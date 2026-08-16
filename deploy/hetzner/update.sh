@@ -40,14 +40,24 @@ getent group intelligence-review >/dev/null 2>&1 || \
 getent group caddy >/dev/null 2>&1 || groupadd --system caddy
 getent group scamshield-social >/dev/null 2>&1 || \
   groupadd --system scamshield-social
+if ! command -v setfacl >/dev/null || ! command -v getfacl >/dev/null; then
+  echo "ACL utilities are required; rerun deploy/hetzner/install.sh" >&2
+  exit 78
+fi
 if ! getent passwd scamshield-social-export >/dev/null 2>&1; then
   useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin \
     --gid scamshield-social scamshield-social-export
 fi
 usermod --append --groups intelligence-review scamshield
 usermod --append --groups scamshield-social scamshield
-usermod --gid scamshield-social --append --groups scamshield-runtime \
-  scamshield-social-export
+usermod --gid scamshield-social scamshield-social-export
+gpasswd --delete scamshield-social-export scamshield-runtime \
+  >/dev/null 2>&1 || true
+if id -nG scamshield-social-export | tr ' ' '\n' | \
+    grep -Fxq scamshield-runtime; then
+  echo "refusing social exporter access to the shared runtime-secret group" >&2
+  exit 65
+fi
 chown root:scamshield /var/lib/scamshield
 chmod 3771 /var/lib/scamshield
 install -d -o scamshield -g intelligence-review -m 2750 \
@@ -110,6 +120,14 @@ fi
 
 chmod -R a+rX "$scam_release" "$pal_release"
 
+social_parent_locked=1
+restore_social_parent_mode() {
+  if (( social_parent_locked )); then
+    chmod 3771 /var/lib/scamshield >/dev/null 2>&1 || true
+  fi
+}
+trap restore_social_parent_mode EXIT
+chmod 3751 /var/lib/scamshield
 for social_path in /var/lib/scamshield/social \
                    /var/lib/scamshield/social-export; do
   if [[ -e "$social_path" || -L "$social_path" ]]; then
@@ -126,17 +144,75 @@ legacy_output_mode=""
 install -d -o scamshield -g scamshield-social -m 2750 \
   /var/lib/scamshield/social
 social_db=/var/lib/scamshield/social/social-observations.db
-for social_db_file in "$social_db" "${social_db}-wal" "${social_db}-shm"; do
-  if [[ -e "$social_db_file" || -L "$social_db_file" ]]; then
-    [[ -f "$social_db_file" && ! -L "$social_db_file" ]] || {
-      echo "private social database member is not a regular file" >&2
-      exit 65
-    }
-    chown scamshield:scamshield-social "$social_db_file"
-    chmod 0640 "$social_db_file"
-  fi
-done
-if [[ ! -e /etc/scamshield/social-export-hmac.key ]]; then
+harden_social_database_members() {
+  python3 - "$(dirname "$social_db")" <<'PY'
+import grp
+import os
+import pwd
+import stat
+import sys
+
+
+def fail(message: str) -> None:
+    raise SystemExit(message)
+
+
+if not hasattr(os, "O_NOFOLLOW"):
+    fail("this host cannot safely open private social database members")
+
+directory_flags = os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW
+try:
+    directory_fd = os.open(sys.argv[1], directory_flags)
+except OSError:
+    fail("private social database directory is unsafe")
+
+try:
+    directory = os.fstat(directory_fd)
+    expected_uid = pwd.getpwnam("scamshield").pw_uid
+    expected_gid = grp.getgrnam("scamshield-social").gr_gid
+    if (
+        not stat.S_ISDIR(directory.st_mode)
+        or directory.st_uid != expected_uid
+        or directory.st_gid != expected_gid
+        or stat.S_IMODE(directory.st_mode) != 0o2750
+    ):
+        fail("private social database directory ownership or mode is unsafe")
+
+    member_flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK | os.O_NOFOLLOW
+    for member in ("social-observations.db", "social-observations.db-wal", "social-observations.db-shm"):
+        try:
+            descriptor = os.open(member, member_flags, dir_fd=directory_fd)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            fail("private social database member cannot be opened safely")
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                fail("private social database member is not a unique regular file")
+            os.fchown(descriptor, expected_uid, expected_gid)
+            os.fchmod(descriptor, 0o640)
+        finally:
+            os.close(descriptor)
+finally:
+    os.close(directory_fd)
+PY
+}
+if ! harden_social_database_members; then
+  echo "refusing unsafe private social database state" >&2
+  exit 65
+fi
+if [[ -e /etc/scamshield || -L /etc/scamshield ]]; then
+  [[ -d /etc/scamshield && ! -L /etc/scamshield ]] || {
+    echo "refusing unsafe ScamShield configuration directory" >&2
+    exit 65
+  }
+fi
+install -d -o root -g scamshield-runtime -m 0750 /etc/scamshield
+if [[ -L /etc/scamshield/social-export-hmac.key ]]; then
+  echo "social export signing credential must not be a symlink" >&2
+  exit 65
+elif [[ ! -e /etc/scamshield/social-export-hmac.key ]]; then
   install -o root -g root -m 0600 /dev/null \
     /etc/scamshield/social-export-hmac.key
 fi
@@ -164,13 +240,38 @@ else
   chown root:scamshield-runtime "$social_registry"
   chmod 0640 "$social_registry"
 fi
+# Grant the exporter only search permission on the configuration directory and
+# read permission on this one public-projection registry. It is not a member of
+# scamshield-runtime and therefore cannot read the shared environment, channel
+# allowlist, session, routes, or any future runtime-group secret.
+setfacl -m u:scamshield-social-export:--x /etc/scamshield
+setfacl -m u:scamshield-social-export:r-- "$social_registry"
 
-social_enabled="$(awk -F= '
-  $1 == "SCAMSHIELD_SOCIAL_OBSERVATIONS_ENABLED" {
-    print substr($0, index($0, "=") + 1)
-    exit
+if ! social_enabled="$(awk -F= '
+  {
+    key = $1
+    sub(/^[ \t]+/, "", key)
+    sub(/[ \t]+$/, "", key)
   }
-' /etc/scamshield/scamshield.env)"
+  key == "SCAMSHIELD_SOCIAL_OBSERVATIONS_ENABLED" {
+    if (++seen > 1) {
+      exit 2
+    }
+    value = substr($0, index($0, "=") + 1)
+    sub(/\r$/, "", value)
+    sub(/^[ \t]+/, "", value)
+    sub(/[ \t]+$/, "", value)
+    first = substr(value, 1, 1)
+    last = substr(value, length(value), 1)
+    if (length(value) >= 2 && first == last && (first == "\"" || first == "\047")) {
+      value = substr(value, 2, length(value) - 2)
+    }
+    print value
+  }
+' /etc/scamshield/scamshield.env)"; then
+  echo "SCAMSHIELD_SOCIAL_OBSERVATIONS_ENABLED must be assigned at most once" >&2
+  exit 65
+fi
 social_enabled="${social_enabled:-0}"
 [[ "$social_enabled" =~ ^[01]$ ]] || {
   echo "SCAMSHIELD_SOCIAL_OBSERVATIONS_ENABLED must be 0 or 1" >&2
@@ -211,6 +312,7 @@ old_pal="$(readlink -f "$pal_current" 2>/dev/null || true)"
 bot_was_active=0
 monitor_was_active=0
 dragon_was_active=0
+social_export_failed=0
 if systemctl is-active --quiet scamshield-bot.service; then
   bot_was_active=1
 fi
@@ -310,7 +412,6 @@ rollback() {
 # write is briefly removed from the root-owned parent to close the rename/create
 # race while an older unit might still be running.
 trap rollback ERR
-chmod 3751 /var/lib/scamshield
 if [[ -d "$social_output" && \
       "$(stat -c '%U:%G' "$social_output")" != \
       "scamshield-social-export:caddy" ]]; then
@@ -335,6 +436,8 @@ if [[ -e "$social_generations" || -L "$social_generations" ]]; then
 fi
 install -d -o scamshield-social-export -g caddy -m 2750 "$social_generations"
 chmod 3771 /var/lib/scamshield
+social_parent_locked=0
+trap - EXIT
 
 atomic_link "$pal_current" "$pal_release"
 atomic_link "$scam_current" "$scam_release"
@@ -352,7 +455,10 @@ if [[ "$mode" != "--no-restart" ]]; then
   systemctl enable --now scamshield-source-expansion.timer >/dev/null
   systemctl enable --now scamshield-social-export.timer >/dev/null
   if [[ "$social_enabled" == "1" ]] && (( monitor_was_active )); then
-    systemctl start scamshield-social-export.service || rollback
+    if ! systemctl start scamshield-social-export.service; then
+      echo "social export failed; release remains active and last good bundle is preserved" >&2
+      social_export_failed=1
+    fi
   fi
   sleep 8
   if (( bot_was_active )) && \
@@ -396,4 +502,8 @@ if (( dragon_was_active )); then
 fi
 if [[ "$mode" == "--no-restart" ]]; then
   echo "Services were not started; complete /etc/scamshield/scamshield.env first."
+fi
+if (( social_export_failed )); then
+  echo "deployment completed with a failed social export" >&2
+  exit 1
 fi

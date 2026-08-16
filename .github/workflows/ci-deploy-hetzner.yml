@@ -57,8 +57,6 @@ jobs:
             --shell /usr/sbin/nologin --gid scamshield-social \
             scamshield-social-export 2>/dev/null || true
           sudo usermod --append --groups scamshield-social scamshield
-          sudo usermod --append --groups scamshield-runtime \
-            scamshield-social-export
           sudo install -d \
             /opt/scamshield/current/.venv/bin \
             /opt/scamshield/current/deploy/hetzner \
@@ -66,7 +64,8 @@ jobs:
             /var/lib/scamshield/dragon-den \
             /var/lib/scamshield/palimpsest-inbox \
             /var/lib/scamshield/review \
-            /var/lib/scamshield/handoffs/narcoscope \
+            /var/lib/scamshield/handoffs/narcoscope
+          sudo install -d -o root -g scamshield-runtime -m 0750 \
             /etc/scamshield
           sudo install -d -o scamshield -g scamshield-social -m 2750 \
             /var/lib/scamshield/social
