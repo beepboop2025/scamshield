@@ -12,7 +12,7 @@ palimpsest_repo="${PALIMPSEST_REPO_URL:-https://github.com/beepboop2025/palimpse
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq git python3 python3-venv ca-certificates openssl util-linux >/dev/null
+apt-get install -y -qq acl git python3 python3-venv ca-certificates openssl util-linux >/dev/null
 
 getent group scamshield >/dev/null 2>&1 || groupadd --system scamshield
 getent group scamshield-runtime >/dev/null 2>&1 || \
@@ -34,8 +34,14 @@ if ! getent passwd scamshield-social-export >/dev/null 2>&1; then
   useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin \
     --gid scamshield-social scamshield-social-export
 fi
-usermod --gid scamshield-social --append --groups scamshield-runtime \
-  scamshield-social-export
+usermod --gid scamshield-social scamshield-social-export
+gpasswd --delete scamshield-social-export scamshield-runtime \
+  >/dev/null 2>&1 || true
+if id -nG scamshield-social-export | tr ' ' '\n' | \
+    grep -Fxq scamshield-runtime; then
+  echo "refusing social exporter access to the shared runtime-secret group" >&2
+  exit 65
+fi
 
 install -d -o root -g root -m 0755 \
   /opt/scamshield /opt/scamshield/releases \
@@ -44,6 +50,14 @@ install -d -o root -g root -m 0755 \
 # while preventing that hostile-input UID from replacing the exporter-owned
 # public child. Other users retain traverse-only access for Caddy.
 install -d -o root -g scamshield -m 3771 /var/lib/scamshield
+social_parent_locked=1
+restore_social_parent_mode() {
+  if (( social_parent_locked )); then
+    chmod 3771 /var/lib/scamshield >/dev/null 2>&1 || true
+  fi
+}
+trap restore_social_parent_mode EXIT
+chmod 3751 /var/lib/scamshield
 install -d -o scamshield -g scamshield-runtime -m 0700 \
   /var/lib/scamshield/telegram \
   /var/lib/scamshield/dragon-den \
@@ -66,21 +80,16 @@ install -d -o scamshield -g scamshield-social -m 2750 \
 if [[ ! -d "$social_output" ]]; then
   install -d -o scamshield-social-export -g caddy -m 2750 "$social_output"
 fi
-social_db=/var/lib/scamshield/social/social-observations.db
-for social_db_file in "$social_db" "${social_db}-wal" "${social_db}-shm"; do
-  if [[ -e "$social_db_file" || -L "$social_db_file" ]]; then
-    [[ -f "$social_db_file" && ! -L "$social_db_file" ]] || {
-      echo "private social database member must be a regular file" >&2
-      exit 65
-    }
-    chown scamshield:scamshield-social "$social_db_file"
-    chmod 0640 "$social_db_file"
-  fi
-done
+chmod 3771 /var/lib/scamshield
+social_parent_locked=0
+trap - EXIT
 install -d -o scamshield -g intelligence-review -m 2750 \
   /var/lib/scamshield/handoffs/narcoscope
 install -d -o root -g scamshield-runtime -m 0750 /etc/scamshield
-if [[ ! -e /etc/scamshield/social-export-hmac.key ]]; then
+if [[ -L /etc/scamshield/social-export-hmac.key ]]; then
+  echo "social export signing credential must not be a symlink" >&2
+  exit 65
+elif [[ ! -e /etc/scamshield/social-export-hmac.key ]]; then
   install -o root -g root -m 0600 /dev/null \
     /etc/scamshield/social-export-hmac.key
 fi

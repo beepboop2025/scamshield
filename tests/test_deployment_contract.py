@@ -89,6 +89,16 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn("-o root -g scamshield -m 3771 /var/lib/scamshield", installer)
         self.assertIn("chown root:scamshield /var/lib/scamshield", updater)
         self.assertIn("chmod 3771 /var/lib/scamshield", updater)
+        self.assertLess(
+            installer.index("chmod 3751 /var/lib/scamshield"),
+            installer.index("for social_path in /var/lib/scamshield/social"),
+        )
+        self.assertLess(
+            updater.index("chmod 3751 /var/lib/scamshield"),
+            updater.index("for social_path in /var/lib/scamshield/social"),
+        )
+        self.assertIn("trap restore_social_parent_mode EXIT", installer)
+        self.assertIn("trap restore_social_parent_mode EXIT", updater)
         self.assertIn(f"social_registry={registry}", updater)
         self.assertIn('elif [[ ! -e "$social_registry" ]]', updater)
         self.assertIn(
@@ -97,6 +107,14 @@ class DeploymentContractTests(unittest.TestCase):
         )
         self.assertIn('chown root:scamshield-runtime "$social_registry"', updater)
         self.assertIn('chmod 0640 "$social_registry"', updater)
+        self.assertIn(
+            "install -d -o root -g scamshield-runtime -m 0750 /etc/scamshield",
+            installer,
+        )
+        self.assertIn(
+            "install -d -o root -g scamshield-runtime -m 0750 /etc/scamshield",
+            updater,
+        )
         self.assertNotIn("SCAMSHIELD_SOCIAL_OBSERVATIONS_ENABLED=1", installer)
         self.assertNotIn("SCAMSHIELD_SOCIAL_OBSERVATIONS_ENABLED=1", updater)
         self.assertNotIn("SCAMSHIELD_SOCIAL_EXPORT_HMAC_KEY=", installer)
@@ -131,6 +149,10 @@ class DeploymentContractTests(unittest.TestCase):
             "trap 'chmod 3771 /var/lib/scamshield >/dev/null 2>&1 || true' EXIT",
             rollback,
         )
+        self.assertIn(
+            "chmod 3771 /var/lib/scamshield >/dev/null 2>&1 || true",
+            updater,
+        )
         self.assertNotIn("quarantined legacy social export tree", installer)
         self.assertNotIn("chown -R", updater)
         self.assertNotIn("chmod -R 0750", updater)
@@ -147,6 +169,7 @@ class DeploymentContractTests(unittest.TestCase):
         )
         self.assertIn("/var/lib/scamshield/social-observations.db", preflight)
         self.assertIn("validate_public_registry_projection", preflight)
+        self.assertIn("750:root:scamshield-runtime", preflight)
 
     def test_social_exporter_has_a_separate_uid_and_monitor_cannot_write_its_tree(self):
         exporter = (
@@ -155,10 +178,38 @@ class DeploymentContractTests(unittest.TestCase):
         monitor = (ROOT / "deploy/hetzner/scamshield-monitor.service").read_text()
         installer = (ROOT / "deploy/hetzner/install.sh").read_text()
         updater = (ROOT / "deploy/hetzner/update.sh").read_text()
+        workflow = (ROOT / ".github/workflows/ci-deploy-hetzner.yml").read_text()
 
         self.assertIn("User=scamshield-social-export", exporter)
         self.assertIn("Group=scamshield-social", exporter)
-        self.assertIn("SupplementaryGroups=scamshield-runtime", exporter)
+        self.assertNotIn("SupplementaryGroups=scamshield-runtime", exporter)
+        self.assertNotIn(
+            "sudo usermod --append --groups scamshield-runtime",
+            workflow,
+        )
+        self.assertIn(
+            "gpasswd --delete scamshield-social-export scamshield-runtime",
+            installer,
+        )
+        self.assertIn(
+            "gpasswd --delete scamshield-social-export scamshield-runtime",
+            updater,
+        )
+        self.assertIn(
+            "setfacl -m u:scamshield-social-export:--x /etc/scamshield",
+            updater,
+        )
+        self.assertIn(
+            'setfacl -m u:scamshield-social-export:r-- "$social_registry"',
+            updater,
+        )
+        preflight = (ROOT / "deploy/hetzner/preflight.sh").read_text()
+        self.assertIn(
+            "social exporter must not inherit the runtime-secret group",
+            preflight,
+        )
+        self.assertIn("user:scamshield-social-export:--x", preflight)
+        self.assertIn("user:scamshield-social-export:r--", preflight)
         self.assertIn(
             "ReadOnlyPaths=/var/lib/scamshield/social-export",
             monitor,
@@ -166,9 +217,35 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertNotIn("SupplementaryGroups=scamshield-runtime caddy", monitor)
         self.assertIn("useradd --system --home-dir /nonexistent", installer)
         self.assertIn("scamshield-social-export:caddy", updater)
-        self.assertIn("640:scamshield:scamshield-social", (
-            ROOT / "deploy/hetzner/preflight.sh"
-        ).read_text())
+        self.assertIn("640:scamshield:scamshield-social", preflight)
+
+    def test_social_database_permission_repair_is_descriptor_bound(self):
+        installer = (ROOT / "deploy/hetzner/install.sh").read_text()
+        updater = (ROOT / "deploy/hetzner/update.sh").read_text()
+
+        self.assertIn('bash /opt/scamshield/source/deploy/hetzner/update.sh', installer)
+        self.assertNotIn('chown scamshield:scamshield-social "$social_db_file"', installer)
+        self.assertIn("os.O_NOFOLLOW", updater)
+        self.assertIn("dir_fd=directory_fd", updater)
+        self.assertIn("os.fstat(descriptor)", updater)
+        self.assertIn("metadata.st_nlink != 1", updater)
+        self.assertIn("os.fchown(descriptor", updater)
+        self.assertIn("os.fchmod(descriptor", updater)
+        self.assertNotIn('chown scamshield:scamshield-social "$social_db_file"', updater)
+
+    def test_export_failure_preserves_release_without_rollback(self):
+        updater = (ROOT / "deploy/hetzner/update.sh").read_text()
+        start = updater.index("if ! systemctl start scamshield-social-export.service")
+        end = updater.index("fi", start)
+        exporter_start = updater[start:end]
+
+        self.assertNotIn("rollback", exporter_start)
+        self.assertIn("last good bundle is preserved", exporter_start)
+        self.assertIn("social_export_failed=1", exporter_start)
+        self.assertIn("deployment completed with a failed social export", updater)
+        self.assertIn('sub(/\\r$/, "", value)', updater)
+        self.assertIn('first == "\\047"', updater)
+        self.assertIn("if (++seen > 1)", updater)
 
     def test_hostile_input_services_cannot_replace_public_export_tree(self):
         read_only_unit = (

@@ -2,6 +2,7 @@ import asyncio
 import types
 import unittest
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 from telethon import types as telegram_types
 from telethon import utils as telegram_utils
@@ -20,6 +21,7 @@ class _Collector:
             self.store.state = state
 
         self.store.record_monitor_state = record_monitor_state
+        self.store.register_collector_source = lambda *args, **kwargs: None
 
     async def process_live(self, source, message):
         self.calls.append((source, message))
@@ -49,6 +51,14 @@ class _SocialSpool:
     def __init__(self):
         self.calls = []
         self.raise_on_capture = False
+        self.registry_reloads = 0
+        self.monitor_registries = []
+
+    def reload_registry(self):
+        self.registry_reloads += 1
+
+    def note_monitor_registry(self, references):
+        self.monitor_registries.append(tuple(references))
 
     def capture(self, source, message):
         if self.raise_on_capture:
@@ -274,13 +284,13 @@ class MonitorRuntimeTests(unittest.IsolatedAsyncioTestCase):
         social_spool = _SocialSpool()
         runtime, _ = self._runtime(queue_size=2, social_spool=social_spool)
         runtime.enqueue_social(self.source, types.SimpleNamespace(id=71))
-        runtime.social_authorization_ready = False
+        runtime._set_social_authorization(False)
         worker = asyncio.create_task(runtime.social_worker())
         try:
             await asyncio.sleep(0.05)
             self.assertEqual(social_spool.calls, [])
             self.assertEqual(runtime.social_queue.qsize(), 0)
-            runtime.social_authorization_ready = True
+            runtime._set_social_authorization(True)
             await asyncio.wait_for(runtime.social_queue.join(), timeout=1)
         finally:
             worker.cancel()
@@ -297,14 +307,75 @@ class MonitorRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         social_spool.reload_registry = fail_reload
         runtime, _ = self._runtime(social_spool=social_spool)
+        runtime.sources_by_reference[self.source.reference] = self.source
 
-        with self.assertRaises(RuntimeError):
+        registry = types.SimpleNamespace(
+            references=(self.source.reference,),
+            issues=(),
+        )
+        with patch("monitor.parse_source_registry", return_value=registry):
             await runtime.refresh_sources()
         await runtime._handle_message(self._event(8))
 
         self.assertFalse(runtime.social_authorization_ready)
+        self.assertFalse(runtime.social_authorization_event.is_set())
+        self.assertEqual(social_spool.monitor_registries, [])
         self.assertEqual(runtime.social_queue.qsize(), 0)
         self.assertEqual(runtime.live_queue.qsize(), 1)
+        self.assertIn("social_ready=0", runtime.status_text())
+
+    async def test_failed_monitor_allowlist_sync_closes_only_social_lane(self):
+        social_spool = _SocialSpool()
+
+        def fail_sync(_references):
+            raise RuntimeError("database unavailable")
+
+        social_spool.note_monitor_registry = fail_sync
+        runtime, _ = self._runtime(social_spool=social_spool)
+        runtime.sources_by_reference[self.source.reference] = self.source
+        registry = types.SimpleNamespace(
+            references=(self.source.reference,),
+            issues=(),
+        )
+
+        with patch("monitor.parse_source_registry", return_value=registry):
+            await runtime.refresh_sources()
+        await runtime._handle_message(self._event(9))
+
+        self.assertEqual(social_spool.registry_reloads, 1)
+        self.assertFalse(runtime.social_authorization_ready)
+        self.assertEqual(runtime.social_queue.qsize(), 0)
+        self.assertEqual(runtime.live_queue.qsize(), 1)
+
+    async def test_successful_allowlist_refresh_reopens_social_lane(self):
+        social_spool = _SocialSpool()
+        runtime, _ = self._runtime(social_spool=social_spool)
+        runtime.sources_by_reference[self.source.reference] = self.source
+        runtime._set_social_authorization(False)
+        registry = types.SimpleNamespace(
+            references=(self.source.reference,),
+            issues=(),
+        )
+
+        with patch("monitor.parse_source_registry", return_value=registry):
+            await runtime.refresh_sources()
+
+        self.assertEqual(social_spool.registry_reloads, 1)
+        self.assertEqual(social_spool.monitor_registries, [(self.source.reference,)])
+        self.assertTrue(runtime.social_authorization_ready)
+        self.assertTrue(runtime.social_authorization_event.is_set())
+
+    async def test_edit_is_captured_without_replaying_core_analysis(self):
+        relay = _Relay()
+        social_spool = _SocialSpool()
+        runtime, _ = self._runtime(relay=relay, social_spool=social_spool)
+
+        await runtime._handle_edited(self._event(10))
+
+        self.assertEqual(len(relay.calls), 1)
+        self.assertEqual(runtime.social_queue.qsize(), 1)
+        self.assertEqual(runtime.live_queue.qsize(), 0)
+        self.assertEqual(runtime.live_enqueued, 0)
 
     async def test_deletion_event_enqueues_content_free_tombstone(self):
         social_spool = _SocialSpool()

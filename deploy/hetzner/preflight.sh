@@ -30,6 +30,19 @@ check_social_collection() {
     fail "SCAMSHIELD_SOCIAL_SOURCES_FILE cannot override the production registry"
   [[ "${SCAMSHIELD_SOCIAL_OUTPUT_DIR:-$social_output}" == "$social_output" ]] || \
     fail "SCAMSHIELD_SOCIAL_OUTPUT_DIR cannot override the public production path"
+  if [[ "$component" == "social-export" ]] && \
+      id -nG | tr ' ' '\n' | grep -Fxq scamshield-runtime; then
+    fail "social exporter must not inherit the runtime-secret group"
+  fi
+  [[ -d /etc/scamshield && ! -L /etc/scamshield && \
+     "$(stat -c '%a:%U:%G' /etc/scamshield)" == \
+     "750:root:scamshield-runtime" ]] || \
+    fail "configuration directory ownership/mode must be root:scamshield-runtime 0750"
+  command -v getfacl >/dev/null || \
+    fail "ACL utilities are required for the isolated social registry"
+  getfacl -cp /etc/scamshield | \
+    grep -Fxq 'user:scamshield-social-export:--x' || \
+    fail "social exporter lacks traverse-only configuration access"
   [[ "$(stat -c '%a:%U:%G' /var/lib/scamshield)" == \
      "3771:root:scamshield" ]] || \
     fail "state parent ownership/mode must be root:scamshield 3771"
@@ -38,6 +51,9 @@ check_social_collection() {
   [[ "$(stat -c '%a:%U:%G' "$social_registry")" == \
      "640:root:scamshield-runtime" ]] || \
     fail "social publisher registry ownership/mode must be root:scamshield-runtime 0640"
+  getfacl -cp "$social_registry" | \
+    grep -Fxq 'user:scamshield-social-export:r--' || \
+    fail "social exporter lacks read-only registry access"
   social_signing_origin=/etc/scamshield/social-export-hmac.key
   [[ -f "$social_signing_origin" && ! -L "$social_signing_origin" && \
      "$(stat -c '%a:%U:%G' "$social_signing_origin")" == "600:root:root" ]] || \
@@ -71,7 +87,7 @@ check_social_collection() {
     [[ -w "$social_db_parent" ]] || \
       fail "monitor cannot write the private social database parent"
   fi
-  if [[ -e "$social_db" ]]; then
+  if [[ -e "$social_db" || -L "$social_db" ]]; then
     [[ -f "$social_db" && ! -L "$social_db" ]] || \
       fail "social observation spool must be a regular file"
     [[ "$(stat -c '%a:%U:%G' "$social_db")" == \
@@ -110,8 +126,11 @@ if [[ "$component" == "social-export" ]]; then
   # A disabled opt-in lane is a successful no-op. This allows the hardened
   # timer to be installed before the separately managed credential is filled.
   [[ "$social_enabled" == "1" ]] || exit 0
-  [[ -r /var/lib/scamshield/social/social-observations.db ]] || \
-    fail "social observation spool is unreadable"
+  social_db=/var/lib/scamshield/social/social-observations.db
+  if [[ -e "$social_db" || -L "$social_db" ]]; then
+    [[ -f "$social_db" && ! -L "$social_db" && -r "$social_db" ]] || \
+      fail "social observation spool is unreadable"
+  fi
   [[ -w /var/lib/scamshield/social-export ]] || \
     fail "social export directory is not writable"
   social_credential="${CREDENTIALS_DIRECTORY:-}/social_export_hmac"

@@ -90,11 +90,14 @@ class MonitorRuntime:
         # refresh_sources() closes this gate while either reviewed allowlist is
         # being refreshed. Tests and direct runtime users start ready; the
         # production process refreshes before registering live workers.
-        self.social_authorization_ready = social_spool is not None
+        self.social_authorization_ready = False
+        self.social_authorization_event = asyncio.Event()
+        self._set_social_authorization(social_spool is not None)
         self.sources_by_reference: dict[str, ResolvedSource] = {}
         self.sources_by_peer: dict[str, ResolvedSource] = {}
         self.failed_references: set[str] = set()
         self._message_handler = self._handle_message
+        self._edited_handler = self._handle_edited
         self._deleted_handler = self._handle_deleted
         self._event_handlers: list[tuple[object, object]] = []
         self.live_queue: asyncio.Queue[tuple[ResolvedSource, object]] = asyncio.Queue(
@@ -121,6 +124,15 @@ class MonitorRuntime:
     @property
     def sources(self) -> tuple[ResolvedSource, ...]:
         return tuple(self.sources_by_peer.values())
+
+    def _set_social_authorization(self, ready: bool) -> None:
+        """Keep the synchronous enqueue gate and worker wake-up in step."""
+
+        self.social_authorization_ready = ready
+        if ready:
+            self.social_authorization_event.set()
+        else:
+            self.social_authorization_event.clear()
 
     async def _resolve(self, reference: str) -> ResolvedSource:
         lookup: str | int = reference if reference.startswith("@") else int(reference)
@@ -221,8 +233,10 @@ class MonitorRuntime:
         )
 
     async def refresh_sources(self) -> None:
+        social_registry_loaded = self.social_spool is None
+        social_synchronized = self.social_spool is None
         if self.social_spool is not None:
-            self.social_authorization_ready = False
+            self._set_social_authorization(False)
             try:
                 await asyncio.to_thread(self.social_spool.reload_registry)
             except Exception as exc:
@@ -231,9 +245,10 @@ class MonitorRuntime:
                     "social publisher registry refresh failed (%s)",
                     type(exc).__name__,
                 )
-                raise
+            else:
+                social_registry_loaded = True
         registry = parse_source_registry(CHANNELS_FILE)
-        if self.social_spool is not None:
+        if self.social_spool is not None and social_registry_loaded:
             try:
                 await asyncio.to_thread(
                     self.social_spool.note_monitor_registry,
@@ -245,7 +260,8 @@ class MonitorRuntime:
                     "social monitor-allowlist sync failed (%s)",
                     type(exc).__name__,
                 )
-                raise
+            else:
+                social_synchronized = True
         self.failed_references.intersection_update(registry.references)
         for issue in registry.issues:
             log.warning("source registry line %s: %s", issue.line_number, issue.reason)
@@ -334,10 +350,10 @@ class MonitorRuntime:
             self._replace_event_handler()
         if self.dragon_den_relay is not None:
             self.dragon_den_relay.update_source_coverage(self.sources)
-        if self.social_spool is not None:
+        if self.social_spool is not None and social_synchronized:
             # Open capture only after both registries and the resulting runtime
             # source map have been applied as one refresh operation.
-            self.social_authorization_ready = True
+            self._set_social_authorization(True)
         if not self.sources_by_peer:
             log.warning("no configured Telegram sources are currently resolved")
 
@@ -412,7 +428,7 @@ class MonitorRuntime:
             chats = [source.entity for source in self.sources_by_peer.values()]
             self._event_handlers = [
                 (self._message_handler, events.NewMessage(chats=chats)),
-                (self._message_handler, events.MessageEdited(chats=chats)),
+                (self._edited_handler, events.MessageEdited(chats=chats)),
                 (self._deleted_handler, events.MessageDeleted(chats=chats)),
             ]
             for handler, builder in self._event_handlers:
@@ -440,7 +456,8 @@ class MonitorRuntime:
             status = f"{status}; {self.dragon_den_relay.status_text()}"
         if self.social_spool is not None:
             status = (
-                f"{status}; social_captured={self.social_captured}; "
+                f"{status}; social_ready={int(self.social_authorization_ready)}; "
+                f"social_captured={self.social_captured}; "
                 f"social_failed={self.social_failed}; "
                 f"social_queue={self.social_queue.qsize()}/{self.social_queue.maxsize}; "
                 f"social_deferred={self.social_deferred}"
@@ -542,6 +559,14 @@ class MonitorRuntime:
                     self.live_deferred,
                 )
 
+    async def _handle_edited(self, event) -> None:
+        """Record revisions without replaying the core message analyzer."""
+
+        source = self.sources_by_peer.get(str(event.chat_id))
+        if source is None:
+            return
+        self.enqueue_auxiliary(source, event.message)
+
     async def _handle_deleted(self, event) -> None:
         source = self.sources_by_peer.get(str(event.chat_id))
         if source is None:
@@ -619,8 +644,7 @@ class MonitorRuntime:
                 # Preserve already-authorized work while a registry refresh is
                 # applying. New events remain closed at enqueue time, and the
                 # bounded reconciliation overlap recovers those after refresh.
-                while not self.social_authorization_ready:
-                    await asyncio.sleep(0.1)
+                await self.social_authorization_event.wait()
                 if action == "capture":
                     outcome = await asyncio.to_thread(
                         self.social_spool.capture, source, payload,

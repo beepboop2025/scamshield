@@ -121,8 +121,15 @@ shared database. It migrates the configuration without printing secrets,
 creates a consistent SQLite backup under
 `/var/lib/scamshield/migration-backups/`, and preserves Riptide's database
 access through the existing `scamshield` group. The separate
-`scamshield-runtime` group protects Telegram credentials and source config
-from other fleet services.
+`scamshield-runtime` group protects Telegram credentials and source config from
+other fleet services. `/etc/scamshield` remains `root:scamshield-runtime` mode
+0750 and the reviewed social registry remains `root:scamshield-runtime` mode
+0640. Narrow POSIX ACL entries give `scamshield-social-export` traverse-only
+access to that directory and read-only access to that one registry. The
+exporter is not a `scamshield-runtime` member, cannot list the directory, and
+cannot read the shared environment, channel allowlist, session, or route file.
+Replacing either ACL-managed path outside deployment makes social preflight
+fail closed until `update.sh` restores the reviewed access contract.
 
 ## Server secrets and activation
 
@@ -322,7 +329,11 @@ database is unavailable, or signing fails, the exporter does not switch the
 `current` symlink. The previous generation remains the last known good. Expose
 only that `current` directory through a fixed read-only HTTPS location; never
 serve the spool database, environment file, source registry, or generations
-parent. This is bounded reviewed-publisher coverage, not “all Telegram,” and
+parent. An exporter failure is deliberately not an application-release
+rollback condition: the monitor and bot remain on the validated release, the
+failed oneshot remains visible to systemd, the deployment reports failure
+without reverting the healthy release, and the last good bundle stays served.
+This is bounded reviewed-publisher coverage, not “all Telegram,” and
 every record remains `attributed-source-report-not-corroboration`.
 
 Each completed reconciliation also refetches the newest 50 channel messages.
