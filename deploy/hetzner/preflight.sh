@@ -3,8 +3,8 @@ set -euo pipefail
 
 component="${1:-}"
 case "$component" in
-  bot|monitor|dragon-den) ;;
-  *) echo "usage: $0 bot|monitor|dragon-den" >&2; exit 64 ;;
+  bot|monitor|dragon-den|social-export) ;;
+  *) echo "usage: $0 bot|monitor|dragon-den|social-export" >&2; exit 64 ;;
 esac
 
 fail() {
@@ -14,6 +14,119 @@ fail() {
 
 [[ "${SCAMSHIELD_STORE_RAW_SAMPLES:-0}" == "0" ]] || \
   fail "raw sample storage must remain disabled in production"
+
+social_enabled="${SCAMSHIELD_SOCIAL_OBSERVATIONS_ENABLED:-0}"
+[[ "$social_enabled" =~ ^[01]$ ]] || \
+  fail "SCAMSHIELD_SOCIAL_OBSERVATIONS_ENABLED must be 0 or 1"
+
+check_social_collection() {
+  social_db=/var/lib/scamshield/social/social-observations.db
+  social_registry=/etc/scamshield/palimpsest-social-sources.json
+  social_public_registry=/opt/palimpsest/current/config/social_sources.json
+  social_output=/var/lib/scamshield/social-export
+  [[ "${SCAMSHIELD_SOCIAL_DB:-$social_db}" == "$social_db" ]] || \
+    fail "SCAMSHIELD_SOCIAL_DB cannot override the private production path"
+  [[ "${SCAMSHIELD_SOCIAL_SOURCES_FILE:-$social_registry}" == "$social_registry" ]] || \
+    fail "SCAMSHIELD_SOCIAL_SOURCES_FILE cannot override the production registry"
+  [[ "${SCAMSHIELD_SOCIAL_OUTPUT_DIR:-$social_output}" == "$social_output" ]] || \
+    fail "SCAMSHIELD_SOCIAL_OUTPUT_DIR cannot override the public production path"
+  [[ "$(stat -c '%a:%U:%G' /var/lib/scamshield)" == \
+     "3771:root:scamshield" ]] || \
+    fail "state parent ownership/mode must be root:scamshield 3771"
+  [[ -f "$social_registry" && ! -L "$social_registry" && -r "$social_registry" ]] || \
+    fail "social publisher registry must be a readable regular file"
+  [[ "$(stat -c '%a:%U:%G' "$social_registry")" == \
+     "640:root:scamshield-runtime" ]] || \
+    fail "social publisher registry ownership/mode must be root:scamshield-runtime 0640"
+  social_signing_origin=/etc/scamshield/social-export-hmac.key
+  [[ -f "$social_signing_origin" && ! -L "$social_signing_origin" && \
+     "$(stat -c '%a:%U:%G' "$social_signing_origin")" == "600:root:root" ]] || \
+    fail "social export signing credential ownership/mode must be root:root 0600"
+  social_signing_size="$(stat -c '%s' "$social_signing_origin")"
+  (( social_signing_size >= 32 && social_signing_size <= 4096 )) || \
+    fail "enabled social lane requires a bounded dedicated signing credential"
+  [[ -f "$social_public_registry" && ! -L "$social_public_registry" && \
+     -r "$social_public_registry" ]] || \
+    fail "pinned Palimpsest social publisher registry must be a readable regular file"
+  [[ ! -e /var/lib/scamshield/social-observations.db && \
+     ! -L /var/lib/scamshield/social-observations.db ]] || \
+    fail "legacy social database requires a quiesced migration to the private path"
+  social_db_parent="$(dirname "$social_db")"
+  [[ -d "$social_db_parent" && ! -L "$social_db_parent" && \
+     -r "$social_db_parent" && -x "$social_db_parent" ]] || \
+    fail "private social database parent is not accessible"
+  [[ "$(stat -c '%a:%U:%G' "$social_db_parent")" == \
+     "2750:scamshield:scamshield-social" ]] || \
+    fail "private social database parent ownership/mode is invalid"
+  [[ -d "$social_output" && ! -L "$social_output" && \
+     "$(stat -c '%a:%U:%G' "$social_output")" == \
+     "2750:scamshield-social-export:caddy" ]] || \
+    fail "social export directory ownership/mode is invalid"
+  social_generations="$social_output/generations"
+  [[ -d "$social_generations" && ! -L "$social_generations" && \
+     "$(stat -c '%a:%U:%G' "$social_generations")" == \
+     "2750:scamshield-social-export:caddy" ]] || \
+    fail "social export generations ownership/mode is invalid"
+  if [[ "$component" == "monitor" ]]; then
+    [[ -w "$social_db_parent" ]] || \
+      fail "monitor cannot write the private social database parent"
+  fi
+  if [[ -e "$social_db" ]]; then
+    [[ -f "$social_db" && ! -L "$social_db" ]] || \
+      fail "social observation spool must be a regular file"
+    [[ "$(stat -c '%a:%U:%G' "$social_db")" == \
+       "640:scamshield:scamshield-social" ]] || \
+      fail "social observation spool ownership/mode is invalid"
+  fi
+  for social_db_aux in "${social_db}-wal" "${social_db}-shm"; do
+    if [[ -e "$social_db_aux" || -L "$social_db_aux" ]]; then
+      [[ -f "$social_db_aux" && ! -L "$social_db_aux" && \
+         "$(stat -c '%a:%U:%G' "$social_db_aux")" == \
+         "640:scamshield:scamshield-social" ]] || \
+        fail "social observation WAL member ownership/mode is invalid"
+    fi
+  done
+  social_staleness="${SCAMSHIELD_SOCIAL_MAX_STALENESS_SECONDS:-900}"
+  [[ "$social_staleness" =~ ^[0-9]+$ ]] || \
+    fail "social export staleness must be numeric"
+  (( social_staleness >= 60 && social_staleness <= 86400 )) || \
+    fail "social export staleness must be 60..86400 seconds"
+  PYTHONPATH=/opt/scamshield/current \
+    /opt/scamshield/current/.venv/bin/python - \
+      "$social_registry" "$social_public_registry" <<'PY' || \
+    fail "social registry projection does not match pinned Palimpsest"
+import sys
+from scamshield.social_observation_spool import validate_public_registry_projection
+validate_public_registry_projection(sys.argv[1], sys.argv[2])
+PY
+}
+
+if [[ "$social_enabled" == "1" && \
+      ( "$component" == "monitor" || "$component" == "social-export" ) ]]; then
+  check_social_collection
+fi
+
+if [[ "$component" == "social-export" ]]; then
+  # A disabled opt-in lane is a successful no-op. This allows the hardened
+  # timer to be installed before the separately managed credential is filled.
+  [[ "$social_enabled" == "1" ]] || exit 0
+  [[ -r /var/lib/scamshield/social/social-observations.db ]] || \
+    fail "social observation spool is unreadable"
+  [[ -w /var/lib/scamshield/social-export ]] || \
+    fail "social export directory is not writable"
+  social_credential="${CREDENTIALS_DIRECTORY:-}/social_export_hmac"
+  if [[ -z "${CREDENTIALS_DIRECTORY:-}" ]]; then
+    social_credential=/etc/scamshield/social-export-hmac.key
+  fi
+  [[ -f "$social_credential" && ! -L "$social_credential" && \
+     -r "$social_credential" ]] || \
+    fail "social export signing credential is unreadable"
+  (( $(stat -c '%s' "$social_credential") <= 4096 )) || \
+    fail "social export signing credential is too large"
+  (( $(tr -d '[:space:]' < "$social_credential" | wc -c) >= 32 )) || \
+    fail "social export signing credential is too short"
+  exit 0
+fi
 
 check_dragon_den() {
   token="${DRAGON_DEN_BOT_TOKEN:-}"

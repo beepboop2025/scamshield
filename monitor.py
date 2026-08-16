@@ -32,13 +32,14 @@ from scamshield.envload import load_env
 from scamshield.iocstore import IocStore
 from scamshield.runtime import channels_file_path, session_base_path
 from scamshield.service_health import notify_systemd, watchdog_interval
+from scamshield.social_observation_spool import SocialObservationSpool
 from scamshield.telegram_collector import ResolvedSource, TelegramCollector
 from scamshield.telegram_sources import (
     MonitorSettings,
+    normalize_source_reference,
     parse_source_registry,
     source_reference_digest,
 )
-
 
 load_env()
 logging.basicConfig(
@@ -49,6 +50,7 @@ log = logging.getLogger("scamshield.monitor")
 
 SESSION = session_base_path()
 CHANNELS_FILE = channels_file_path()
+SOCIAL_REVISION_LOOKBACK = 50
 
 
 def alert_owner(text: str) -> None:
@@ -77,25 +79,38 @@ class MonitorRuntime:
         settings: MonitorSettings,
         pseudonym_key: str,
         dragon_den_relay: DragonDenTelethonRelay | None = None,
+        social_spool: SocialObservationSpool | None = None,
     ):
         self.client = client
         self.collector = collector
         self.settings = settings
         self.pseudonym_key = pseudonym_key
         self.dragon_den_relay = dragon_den_relay
+        self.social_spool = social_spool
+        # refresh_sources() closes this gate while either reviewed allowlist is
+        # being refreshed. Tests and direct runtime users start ready; the
+        # production process refreshes before registering live workers.
+        self.social_authorization_ready = social_spool is not None
         self.sources_by_reference: dict[str, ResolvedSource] = {}
         self.sources_by_peer: dict[str, ResolvedSource] = {}
         self.failed_references: set[str] = set()
-        self._handler = self._handle_message
-        self._event_builders: list[object] = []
+        self._message_handler = self._handle_message
+        self._deleted_handler = self._handle_deleted
+        self._event_handlers: list[tuple[object, object]] = []
         self.live_queue: asyncio.Queue[tuple[ResolvedSource, object]] = asyncio.Queue(
             maxsize=settings.live_queue_size
         )
+        self.social_queue: asyncio.Queue[
+            tuple[str, ResolvedSource, object]
+        ] = asyncio.Queue(maxsize=settings.live_queue_size)
         self.started_at = int(time.time())
         self.live_enqueued = 0
         self.live_completed = 0
         self.live_failed = 0
         self.live_deferred = 0
+        self.social_captured = 0
+        self.social_failed = 0
+        self.social_deferred = 0
         self.last_reconciled = 0
         self.last_reconcile_success_at = 0
         self.reconcile_failure_streak = 0
@@ -123,7 +138,12 @@ class MonitorRuntime:
             else:
                 entity = await self.client.get_entity(lookup)
 
-        is_public = bool(getattr(entity, "username", None))
+        is_public = (
+            isinstance(entity, types.Channel)
+            and bool(getattr(entity, "username", None))
+            and getattr(entity, "broadcast", None) is True
+            and getattr(entity, "megagroup", False) is False
+        )
         surface = "public_channel" if is_public else "authorized_private_channel"
         authorization = "public" if is_public else "operator_authorized"
         peer_id = str(utils.get_peer_id(entity))
@@ -167,8 +187,65 @@ class MonitorRuntime:
             self.collector.store.set_source_candidate_status(reference, "APPROVED")
         return source
 
+    async def _reattest_social_source(
+        self,
+        source: ResolvedSource,
+    ) -> ResolvedSource:
+        """Resolve a reviewed handle again and enforce its pinned channel identity."""
+
+        reference = normalize_source_reference(source.reference)
+        if not reference.startswith("@"):
+            raise ValueError("social source must use a public handle")
+        entity = await self.client.get_entity(reference)
+        username = getattr(entity, "username", None)
+        if (
+            not isinstance(entity, types.Channel)
+            or type(username) is not str
+            or getattr(entity, "broadcast", None) is not True
+            or getattr(entity, "megagroup", False) is not False
+            or normalize_source_reference(f"@{username}").casefold()
+            != reference.casefold()
+        ):
+            raise ValueError("reviewed Telegram source is not a public broadcast channel")
+        peer_id = str(utils.get_peer_id(entity))
+        if peer_id != source.peer_id:
+            raise ValueError("reviewed Telegram source peer identity changed")
+        return ResolvedSource(
+            reference=reference,
+            reference_digest=source.reference_digest,
+            peer_id=source.peer_id,
+            source_key=source.source_key,
+            surface="public_channel",
+            authorization="public",
+            entity=entity,
+        )
+
     async def refresh_sources(self) -> None:
+        if self.social_spool is not None:
+            self.social_authorization_ready = False
+            try:
+                await asyncio.to_thread(self.social_spool.reload_registry)
+            except Exception as exc:
+                self.social_failed += 1
+                log.warning(
+                    "social publisher registry refresh failed (%s)",
+                    type(exc).__name__,
+                )
+                raise
         registry = parse_source_registry(CHANNELS_FILE)
+        if self.social_spool is not None:
+            try:
+                await asyncio.to_thread(
+                    self.social_spool.note_monitor_registry,
+                    registry.references,
+                )
+            except Exception as exc:
+                self.social_failed += 1
+                log.warning(
+                    "social monitor-allowlist sync failed (%s)",
+                    type(exc).__name__,
+                )
+                raise
         self.failed_references.intersection_update(registry.references)
         for issue in registry.issues:
             log.warning("source registry line %s: %s", issue.line_number, issue.reason)
@@ -197,6 +274,19 @@ class MonitorRuntime:
             try:
                 source = await self._resolve(reference)
             except Exception as exc:
+                if self.social_spool is not None:
+                    try:
+                        await asyncio.to_thread(
+                            self.social_spool.note_source_error,
+                            reference,
+                            "source-resolution-error",
+                        )
+                    except Exception as spool_exc:
+                        self.social_failed += 1
+                        log.warning(
+                            "social coverage error recording failed (%s)",
+                            type(spool_exc).__name__,
+                        )
                 if reference not in self.failed_references:
                     surface = (
                         "public_channel" if reference.startswith("@")
@@ -244,6 +334,10 @@ class MonitorRuntime:
             self._replace_event_handler()
         if self.dragon_den_relay is not None:
             self.dragon_den_relay.update_source_coverage(self.sources)
+        if self.social_spool is not None:
+            # Open capture only after both registries and the resulting runtime
+            # source map have been applied as one refresh operation.
+            self.social_authorization_ready = True
         if not self.sources_by_peer:
             log.warning("no configured Telegram sources are currently resolved")
 
@@ -311,17 +405,18 @@ class MonitorRuntime:
         return checked
 
     def _replace_event_handler(self) -> None:
-        for builder in self._event_builders:
-            self.client.remove_event_handler(self._handler, builder)
-        self._event_builders = []
+        for handler, builder in self._event_handlers:
+            self.client.remove_event_handler(handler, builder)
+        self._event_handlers = []
         if self.sources_by_peer:
             chats = [source.entity for source in self.sources_by_peer.values()]
-            self._event_builders = [
-                events.NewMessage(chats=chats),
-                events.MessageEdited(chats=chats),
+            self._event_handlers = [
+                (self._message_handler, events.NewMessage(chats=chats)),
+                (self._message_handler, events.MessageEdited(chats=chats)),
+                (self._deleted_handler, events.MessageDeleted(chats=chats)),
             ]
-            for builder in self._event_builders:
-                self.client.add_event_handler(self._handler, builder)
+            for handler, builder in self._event_handlers:
+                self.client.add_event_handler(handler, builder)
 
     def status_text(self) -> str:
         """Return a bounded, identity-free operational summary."""
@@ -343,6 +438,13 @@ class MonitorRuntime:
         )
         if self.dragon_den_relay is not None:
             status = f"{status}; {self.dragon_den_relay.status_text()}"
+        if self.social_spool is not None:
+            status = (
+                f"{status}; social_captured={self.social_captured}; "
+                f"social_failed={self.social_failed}; "
+                f"social_queue={self.social_queue.qsize()}/{self.social_queue.maxsize}; "
+                f"social_deferred={self.social_deferred}"
+            )
         return status
 
     def publish_status(self, *, ready: bool = False, watchdog: bool = False) -> None:
@@ -394,11 +496,39 @@ class MonitorRuntime:
                     type(exc).__name__,
                 )
 
+    def enqueue_social(self, source: ResolvedSource, message: object) -> None:
+        """Bounded enqueue; SQLite work is performed outside the event loop."""
+
+        if self.social_spool is None or not self.social_authorization_ready:
+            return
+        try:
+            self.social_queue.put_nowait(("capture", source, message))
+        except asyncio.QueueFull:
+            self.social_deferred += 1
+
+    def enqueue_social_deletion(
+        self,
+        source: ResolvedSource,
+        message_id: int,
+    ) -> None:
+        if self.social_spool is None or not self.social_authorization_ready:
+            return
+        try:
+            self.social_queue.put_nowait(("tombstone", source, message_id))
+        except asyncio.QueueFull:
+            self.social_deferred += 1
+
+    def enqueue_auxiliary(self, source: ResolvedSource, message: object) -> None:
+        """Fan out pre-analysis observations to independent best-effort sinks."""
+
+        self.enqueue_raw(source, message)
+        self.enqueue_social(source, message)
+
     async def _handle_message(self, event) -> None:
         source = self.sources_by_peer.get(str(event.chat_id))
         if source is None:
             return
-        self.enqueue_raw(source, event.message)
+        self.enqueue_auxiliary(source, event.message)
         try:
             self.live_queue.put_nowait((source, event))
             self.live_enqueued += 1
@@ -411,6 +541,14 @@ class MonitorRuntime:
                     "live queue saturated; %d message(s) deferred to history recovery",
                     self.live_deferred,
                 )
+
+    async def _handle_deleted(self, event) -> None:
+        source = self.sources_by_peer.get(str(event.chat_id))
+        if source is None:
+            return
+        for message_id in tuple(getattr(event, "deleted_ids", ())):
+            if isinstance(message_id, int) and not isinstance(message_id, bool):
+                self.enqueue_social_deletion(source, message_id)
 
     async def _process_live_event(self, source: ResolvedSource, event) -> None:
         try:
@@ -469,14 +607,233 @@ class MonitorRuntime:
             finally:
                 self.live_queue.task_done()
 
+    async def social_worker(self) -> None:
+        """Drain sanitized capture work on a thread, independently of analysis."""
+
+        assert self.social_spool is not None
+        while True:
+            action, source, payload = await self.social_queue.get()
+            try:
+                if not self.social_authorization_ready:
+                    self.social_deferred += 1
+                # Preserve already-authorized work while a registry refresh is
+                # applying. New events remain closed at enqueue time, and the
+                # bounded reconciliation overlap recovers those after refresh.
+                while not self.social_authorization_ready:
+                    await asyncio.sleep(0.1)
+                if action == "capture":
+                    outcome = await asyncio.to_thread(
+                        self.social_spool.capture, source, payload,
+                    )
+                else:
+                    outcome = await asyncio.to_thread(
+                        self.social_spool.tombstone, source, int(payload),
+                    )
+                if outcome.status in {"CAPTURED", "REPLAYED"}:
+                    self.social_captured += 1
+                elif outcome.status == "FAILED":
+                    self.social_failed += 1
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.social_failed += 1
+                log.warning(
+                    "social observation %s failed for source %s (%s)",
+                    action,
+                    source.source_key,
+                    type(exc).__name__,
+                )
+            finally:
+                self.social_queue.task_done()
+
+    async def reconcile_social_source(self, source: ResolvedSource) -> int:
+        """Advance the social cursor without depending on analysis success."""
+
+        if self.social_spool is None or not self.social_authorization_ready:
+            return 0
+        reviewed = await asyncio.to_thread(
+            self.social_spool.is_source_authorized, source,
+        )
+        if not reviewed:
+            return 0
+        try:
+            fresh = await self._reattest_social_source(source)
+            if not await asyncio.to_thread(
+                self.social_spool.is_source_authorized, fresh,
+            ):
+                raise ValueError("social source lost double-allowlist authorization")
+            initialized, cursor = await asyncio.to_thread(
+                self.social_spool.source_cursor, fresh,
+            )
+            if not initialized:
+                messages = [
+                    message
+                    async for message in self.client.iter_messages(
+                        fresh.entity,
+                        limit=max(1, self.settings.initial_history),
+                    )
+                ]
+                if not self.social_authorization_ready:
+                    return 0
+                messages.sort(key=lambda item: int(getattr(item, "id", 0)))
+                await asyncio.to_thread(
+                    self.social_spool.begin_source_batch, fresh,
+                )
+                if self.settings.initial_history == 0:
+                    latest = max(
+                        (int(getattr(item, "id", 0)) for item in messages),
+                        default=0,
+                    )
+                    await asyncio.to_thread(
+                        self.social_spool.initialize_source_cursor, fresh, latest,
+                    )
+                    await asyncio.to_thread(
+                        self.social_spool.note_source_available, fresh,
+                    )
+                    return 0
+                baseline = (
+                    max(0, int(getattr(messages[0], "id", 1)) - 1)
+                    if messages
+                    else 0
+                )
+                await asyncio.to_thread(
+                    self.social_spool.initialize_source_cursor, fresh, baseline,
+                )
+            else:
+                new_messages = [
+                    message
+                    async for message in self.client.iter_messages(
+                        fresh.entity,
+                        min_id=cursor,
+                        reverse=True,
+                        limit=self.settings.backfill_batch,
+                    )
+                ]
+                recent_messages = [
+                    message
+                    async for message in self.client.iter_messages(
+                        fresh.entity,
+                        limit=SOCIAL_REVISION_LOOKBACK,
+                    )
+                ]
+                if not self.social_authorization_ready:
+                    return 0
+                await asyncio.to_thread(
+                    self.social_spool.begin_source_batch, fresh,
+                )
+                by_id: dict[int, object] = {}
+                for message in (*new_messages, *recent_messages):
+                    message_id = getattr(message, "id", None)
+                    if (
+                        isinstance(message_id, int)
+                        and not isinstance(message_id, bool)
+                        and message_id > 0
+                    ):
+                        by_id[message_id] = message
+                messages = [by_id[message_id] for message_id in sorted(by_id)]
+                remote_recent_ids = {
+                    int(message.id)
+                    for message in recent_messages
+                    if isinstance(getattr(message, "id", None), int)
+                    and not isinstance(message.id, bool)
+                    and message.id > 0
+                }
+                known_live_ids = await asyncio.to_thread(
+                    self.social_spool.recent_live_message_ids,
+                    fresh,
+                    limit=SOCIAL_REVISION_LOOKBACK,
+                )
+                if len(remote_recent_ids) < SOCIAL_REVISION_LOOKBACK:
+                    missing_ids = set(known_live_ids) - remote_recent_ids
+                else:
+                    oldest_visible = min(remote_recent_ids)
+                    missing_ids = {
+                        message_id
+                        for message_id in known_live_ids
+                        if message_id >= oldest_visible
+                        and message_id not in remote_recent_ids
+                    }
+
+            processed = 0
+            for message in messages:
+                if not self.social_authorization_ready:
+                    return processed
+                outcome = await asyncio.to_thread(
+                    self.social_spool.capture, fresh, message,
+                )
+                if outcome.status not in {
+                    "CAPTURED",
+                    "REPLAYED",
+                    "SKIPPED_OUTSIDE_SCOPE",
+                    "SKIPPED_TOMBSTONED",
+                }:
+                    raise RuntimeError("social backlog record was rejected")
+                await asyncio.to_thread(
+                    self.social_spool.advance_source_cursor,
+                    fresh,
+                    int(message.id),
+                )
+                processed += 1
+            if initialized:
+                for message_id in sorted(missing_ids):
+                    if not self.social_authorization_ready:
+                        return processed
+                    outcome = await asyncio.to_thread(
+                        self.social_spool.tombstone, fresh, message_id,
+                    )
+                    if outcome.status not in {"CAPTURED", "REPLAYED"}:
+                        raise RuntimeError("social deletion recovery was rejected")
+                    processed += 1
+            await asyncio.to_thread(
+                self.social_spool.note_source_available, fresh,
+            )
+            return processed
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.social_failed += 1
+            with suppress(Exception):
+                await asyncio.to_thread(
+                    self.social_spool.note_source_error,
+                    source.reference,
+                    "social-reconciliation-error",
+                )
+            log.warning(
+                "social history reconciliation failed for source %s (%s)",
+                source.source_key,
+                type(exc).__name__,
+            )
+            return 0
+
+    async def reconcile_social_sources(self) -> int:
+        if self.social_spool is None:
+            return 0
+        gate = asyncio.Semaphore(self.settings.max_reconcile_concurrency)
+
+        async def reconcile_one(source: ResolvedSource) -> int:
+            async with gate:
+                return await self.reconcile_social_source(source)
+
+        results = await asyncio.gather(
+            *(reconcile_one(source) for source in self.sources),
+        )
+        return sum(results)
+
     def start_live_workers(self) -> list[asyncio.Task]:
-        return [
+        workers = [
             asyncio.create_task(
                 self.live_worker(index + 1),
                 name=f"monitor-live-{index + 1}",
             )
             for index in range(self.settings.live_worker_count)
         ]
+        if self.social_spool is not None:
+            workers.append(
+                asyncio.create_task(
+                    self.social_worker(), name="monitor-social-spool",
+                )
+            )
+        return workers
 
 
 async def reconciliation_loop(runtime: MonitorRuntime) -> None:
@@ -502,6 +859,17 @@ async def reconciliation_loop(runtime: MonitorRuntime) -> None:
                 runtime.reconcile_failure_streak = 0
         runtime.publish_status()
         await asyncio.sleep(runtime.settings.reconcile_seconds)
+
+
+async def social_reconciliation_loop(runtime: MonitorRuntime) -> None:
+    while True:
+        await asyncio.sleep(runtime.settings.reconcile_seconds)
+        try:
+            await runtime.reconcile_social_sources()
+        except Exception as exc:
+            runtime.social_failed += 1
+            log.exception("social history reconciliation failed (%s)", type(exc).__name__)
+        runtime.publish_status()
 
 
 async def source_refresh_loop(runtime: MonitorRuntime) -> None:
@@ -582,12 +950,23 @@ async def main() -> None:
         )
     except DragonDenError as exc:
         raise SystemExit(str(exc)) from exc
+    try:
+        social_spool = await asyncio.to_thread(
+            SocialObservationSpool.from_environment,
+        )
+    except Exception as exc:
+        # The feature is optional only while disabled.  Once opted in, an
+        # invalid registry or private-spool failure must not degrade silently.
+        raise SystemExit(
+            f"social observation spool initialization failed: {type(exc).__name__}"
+        ) from exc
     runtime = MonitorRuntime(
         client=client,
         collector=collector,
         settings=settings,
         pseudonym_key=pseudonym_key,
         dragon_den_relay=dragon_den_relay,
+        social_spool=social_spool,
     )
 
     tasks: list[asyncio.Task] = []
@@ -602,6 +981,8 @@ async def main() -> None:
             await runtime.dragon_den_relay.start()
         # Telethon explicitly requires handlers to be registered before this
         # call, otherwise missed updates are fetched but not processed.
+        if runtime.social_spool is not None:
+            await runtime.reconcile_social_sources()
         tasks = runtime.start_live_workers()
         await client.catch_up()
         runtime.publish_status(ready=True)
@@ -620,11 +1001,23 @@ async def main() -> None:
                 watchdog_loop(runtime), name="systemd-watchdog",
             ),
         ])
+        if runtime.social_spool is not None:
+            tasks.append(
+                asyncio.create_task(
+                    social_reconciliation_loop(runtime),
+                    name="monitor-social-reconciliation",
+                )
+            )
         log.info("monitor ready on %d configured source(s)", len(runtime.sources))
         await client.run_until_disconnected()
     finally:
         with suppress(OSError):
             notify_systemd("STOPPING=1\nSTATUS=disconnecting")
+        if social_spool is not None:
+            # Give the independent sanitized queue a bounded chance to persist
+            # already accepted work before worker cancellation.
+            with suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(runtime.social_queue.join(), timeout=10)
         for task in tasks:
             task.cancel()
         if tasks:
@@ -633,6 +1026,9 @@ async def main() -> None:
             await runtime.dragon_den_relay.shutdown()
         if client.is_connected():
             await client.disconnect()
+        if social_spool is not None:
+            with suppress(Exception):
+                await asyncio.to_thread(social_spool.close)
         store.close()
 
 

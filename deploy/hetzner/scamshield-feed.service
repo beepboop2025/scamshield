@@ -38,6 +38,7 @@ RestrictAddressFamilies=AF_UNIX
 SystemCallArchitectures=native
 ReadOnlyPaths=/opt/scamshield /opt/palimpsest /var/lib/scamshield/palimpsest-inbox
 ReadWritePaths=/var/lib/scamshield/review /var/lib/scamshield/handoffs/narcoscope
+InaccessiblePaths=/var/lib/scamshield/social-export
 BindReadOnlyPaths=/var/lib/scamshield/palimpsest-inbox:/opt/palimpsest/current/var/scamshield-inbox
 MemoryMax=512M
 TasksMax=64

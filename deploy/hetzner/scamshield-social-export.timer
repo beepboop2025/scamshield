@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh Palimpsest social observations every two minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+Persistent=true
+RandomizedDelaySec=20
+
+[Install]
+WantedBy=timers.target

@@ -37,7 +37,19 @@ pal_current=/opt/palimpsest/current
 
 getent group intelligence-review >/dev/null 2>&1 || \
   groupadd --system intelligence-review
+getent group caddy >/dev/null 2>&1 || groupadd --system caddy
+getent group scamshield-social >/dev/null 2>&1 || \
+  groupadd --system scamshield-social
+if ! getent passwd scamshield-social-export >/dev/null 2>&1; then
+  useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin \
+    --gid scamshield-social scamshield-social-export
+fi
 usermod --append --groups intelligence-review scamshield
+usermod --append --groups scamshield-social scamshield
+usermod --gid scamshield-social --append --groups scamshield-runtime \
+  scamshield-social-export
+chown root:scamshield /var/lib/scamshield
+chmod 3771 /var/lib/scamshield
 install -d -o scamshield -g intelligence-review -m 2750 \
   /var/lib/scamshield/handoffs/narcoscope
 
@@ -65,6 +77,7 @@ if [[ ! -f "$scam_release/.deploy-ready" ]]; then
     "$scam_release/dragon_den_bot.py" \
     "$scam_release/monitor.py" "$scam_release/login.py" \
     "$scam_release/export_monitoring_summary.py" \
+    "$scam_release/export_social_observations.py" \
     "$scam_release/manage_sources.py"
   touch "$scam_release/.deploy-ready"
 fi
@@ -96,6 +109,103 @@ if [[ ! -f "$pal_release/.deploy-ready" ]]; then
 fi
 
 chmod -R a+rX "$scam_release" "$pal_release"
+
+for social_path in /var/lib/scamshield/social \
+                   /var/lib/scamshield/social-export; do
+  if [[ -e "$social_path" || -L "$social_path" ]]; then
+    [[ -d "$social_path" && ! -L "$social_path" ]] || {
+      echo "refusing unsafe social path: $social_path" >&2
+      exit 65
+    }
+  fi
+done
+social_output=/var/lib/scamshield/social-export
+legacy_output=""
+legacy_output_owner=""
+legacy_output_mode=""
+install -d -o scamshield -g scamshield-social -m 2750 \
+  /var/lib/scamshield/social
+social_db=/var/lib/scamshield/social/social-observations.db
+for social_db_file in "$social_db" "${social_db}-wal" "${social_db}-shm"; do
+  if [[ -e "$social_db_file" || -L "$social_db_file" ]]; then
+    [[ -f "$social_db_file" && ! -L "$social_db_file" ]] || {
+      echo "private social database member is not a regular file" >&2
+      exit 65
+    }
+    chown scamshield:scamshield-social "$social_db_file"
+    chmod 0640 "$social_db_file"
+  fi
+done
+if [[ ! -e /etc/scamshield/social-export-hmac.key ]]; then
+  install -o root -g root -m 0600 /dev/null \
+    /etc/scamshield/social-export-hmac.key
+fi
+[[ -f /etc/scamshield/social-export-hmac.key && \
+   ! -L /etc/scamshield/social-export-hmac.key ]] || {
+  echo "social export signing credential must be a regular file" >&2
+  exit 65
+}
+chown root:root /etc/scamshield/social-export-hmac.key
+chmod 0600 /etc/scamshield/social-export-hmac.key
+social_registry=/etc/scamshield/palimpsest-social-sources.json
+if [[ -L "$social_registry" ]]; then
+  echo "refusing symlinked social publisher registry: $social_registry" >&2
+  exit 65
+elif [[ ! -e "$social_registry" ]]; then
+  install -o root -g scamshield-runtime -m 0640 \
+    "$scam_release/palimpsest-social-sources.example.json" \
+    "$social_registry"
+elif [[ ! -f "$social_registry" ]]; then
+  echo "social publisher registry is not a regular file: $social_registry" >&2
+  exit 65
+else
+  # Preserve operator-reviewed contents while restoring the deployment-owned
+  # access boundary if permissions drifted.
+  chown root:scamshield-runtime "$social_registry"
+  chmod 0640 "$social_registry"
+fi
+
+social_enabled="$(awk -F= '
+  $1 == "SCAMSHIELD_SOCIAL_OBSERVATIONS_ENABLED" {
+    print substr($0, index($0, "=") + 1)
+    exit
+  }
+' /etc/scamshield/scamshield.env)"
+social_enabled="${social_enabled:-0}"
+[[ "$social_enabled" =~ ^[01]$ ]] || {
+  echo "SCAMSHIELD_SOCIAL_OBSERVATIONS_ENABLED must be 0 or 1" >&2
+  exit 65
+}
+if [[ "$social_enabled" == "1" ]]; then
+  social_credential=/etc/scamshield/social-export-hmac.key
+  (( $(stat -c '%s' "$social_credential") <= 4096 )) || {
+    echo "social export signing credential is too large" >&2
+    exit 65
+  }
+  (( $(tr -d '[:space:]' < "$social_credential" | wc -c) >= 32 )) || {
+    echo "enabled social lane requires a dedicated signing credential" >&2
+    exit 65
+  }
+  if [[ -e /var/lib/scamshield/social-observations.db ]]; then
+    echo "enabled social lane requires a quiesced migration of the legacy database" >&2
+    exit 65
+  fi
+  pal_social_registry="$pal_release/config/social_sources.json"
+  [[ -f "$pal_social_registry" && ! -L "$pal_social_registry" ]] || {
+    echo "enabled social lane requires the pinned Palimpsest registry" >&2
+    exit 65
+  }
+  PYTHONPATH="$scam_release" "$scam_release/.venv/bin/python" - \
+      "$social_registry" "$pal_social_registry" <<'PY' || {
+import sys
+from scamshield.social_observation_spool import validate_public_registry_projection
+validate_public_registry_projection(sys.argv[1], sys.argv[2])
+PY
+    echo "social registry projection differs from pinned Palimpsest" >&2
+    exit 65
+  }
+fi
+
 old_scam="$(readlink -f "$scam_current" 2>/dev/null || true)"
 old_pal="$(readlink -f "$pal_current" 2>/dev/null || true)"
 bot_was_active=0
@@ -131,26 +241,57 @@ install_runtime_contract() {
       "$release/deploy/hetzner/$unit" "/etc/systemd/system/$unit"
   done
   for unit in scamshield-source-expansion.service \
-              scamshield-source-expansion.timer; do
+              scamshield-source-expansion.timer \
+              scamshield-social-export.service \
+              scamshield-social-export.timer; do
     if [[ -f "$release/deploy/hetzner/$unit" ]]; then
       install -o root -g root -m 0644 \
         "$release/deploy/hetzner/$unit" "/etc/systemd/system/$unit"
     else
-      systemctl disable --now scamshield-source-expansion.timer \
-        >/dev/null 2>&1 || true
       rm -f "/etc/systemd/system/$unit"
     fi
   done
+  if [[ ! -f \
+      "$release/deploy/hetzner/scamshield-source-expansion.timer" ]]; then
+    systemctl disable --now scamshield-source-expansion.timer \
+      >/dev/null 2>&1 || true
+  fi
+  if [[ ! -f \
+      "$release/deploy/hetzner/scamshield-social-export.timer" ]]; then
+    systemctl disable --now scamshield-social-export.timer \
+      >/dev/null 2>&1 || true
+    systemctl stop scamshield-social-export.service \
+      >/dev/null 2>&1 || true
+  fi
   systemctl daemon-reload
 }
 
 rollback() {
+  trap - ERR
+  # Keep the well-known export name uncreatable by the scamshield group for
+  # the entire rollback. The EXIT trap restores the steady-state mode even if
+  # an intermediate recovery command itself fails under `set -e`.
+  trap 'chmod 3771 /var/lib/scamshield >/dev/null 2>&1 || true' EXIT
+  chmod 3751 /var/lib/scamshield
   echo "deployment health gate failed; restoring previous release" >&2
   [[ -n "$old_scam" ]] && atomic_link "$scam_current" "$old_scam"
   [[ -n "$old_pal" ]] && atomic_link "$pal_current" "$old_pal"
   if [[ -n "$old_scam" ]]; then
     install_runtime_contract "$old_scam"
   fi
+  if [[ -n "$legacy_output" && -d "$legacy_output" ]]; then
+    failed_output="${social_output}.failed.$(date -u +%Y%m%dT%H%M%SZ).$$"
+    if [[ -d "$social_output" && ! -L "$social_output" ]]; then
+      mv "$social_output" "$failed_output"
+      chown root:root "$failed_output"
+      chmod 0700 "$failed_output"
+    fi
+    mv "$legacy_output" "$social_output"
+    chown "$legacy_output_owner" "$social_output"
+    chmod "$legacy_output_mode" "$social_output"
+  fi
+  chmod 3771 /var/lib/scamshield
+  trap - EXIT
   if (( bot_was_active )); then
     systemctl restart scamshield-bot.service || true
   fi
@@ -163,11 +304,44 @@ rollback() {
   exit 1
 }
 
+# The old monitor-owned public tree is not recursively re-owned: it may contain
+# attacker-controlled links/hardlinks. Quarantine it recoverably, then create a
+# clean exporter-owned boundary. Rollback is armed before this mutation. Group
+# write is briefly removed from the root-owned parent to close the rename/create
+# race while an older unit might still be running.
+trap rollback ERR
+chmod 3751 /var/lib/scamshield
+if [[ -d "$social_output" && \
+      "$(stat -c '%U:%G' "$social_output")" != \
+      "scamshield-social-export:caddy" ]]; then
+  legacy_output_owner="$(stat -c '%U:%G' "$social_output")"
+  legacy_output_mode="$(stat -c '%a' "$social_output")"
+  legacy_output="${social_output}.legacy.$(date -u +%Y%m%dT%H%M%SZ).$$"
+  # With parent writes suspended, recheck and take ownership of the boundary
+  # itself before moving it. Never recurse into potentially hostile contents.
+  [[ -d "$social_output" && ! -L "$social_output" ]] || rollback
+  chown root:root "$social_output"
+  chmod 0700 "$social_output"
+  mv "$social_output" "$legacy_output"
+  echo "quarantined legacy social export tree at $legacy_output" >&2
+fi
+install -d -o scamshield-social-export -g caddy -m 2750 "$social_output"
+social_generations="$social_output/generations"
+if [[ -e "$social_generations" || -L "$social_generations" ]]; then
+  [[ -d "$social_generations" && ! -L "$social_generations" ]] || {
+    echo "social export generations path is unsafe" >&2
+    rollback
+  }
+fi
+install -d -o scamshield-social-export -g caddy -m 2750 "$social_generations"
+chmod 3771 /var/lib/scamshield
+
 atomic_link "$pal_current" "$pal_release"
 atomic_link "$scam_current" "$scam_release"
 install_runtime_contract "$scam_release"
 systemctl enable scamshield-bot.service scamshield-feed.timer \
-  scamshield-source-expansion.timer >/dev/null
+  scamshield-source-expansion.timer \
+  scamshield-social-export.timer >/dev/null
 
 if [[ "$mode" != "--no-restart" ]]; then
   started_at="$(date --iso-8601=seconds)"
@@ -176,6 +350,10 @@ if [[ "$mode" != "--no-restart" ]]; then
   (( dragon_was_active )) && systemctl restart scamshield-dragon-den.service
   systemctl enable --now scamshield-feed.timer >/dev/null
   systemctl enable --now scamshield-source-expansion.timer >/dev/null
+  systemctl enable --now scamshield-social-export.timer >/dev/null
+  if [[ "$social_enabled" == "1" ]] && (( monitor_was_active )); then
+    systemctl start scamshield-social-export.service || rollback
+  fi
   sleep 8
   if (( bot_was_active )) && \
       ! systemctl is-active --quiet scamshield-bot.service; then
@@ -203,6 +381,7 @@ if [[ "$mode" != "--no-restart" ]]; then
   fi
 fi
 
+trap - ERR
 echo "ScamShield release active: $target"
 echo "Palimpsest bridge pinned: $pal_revision"
 if (( monitor_was_active )); then
