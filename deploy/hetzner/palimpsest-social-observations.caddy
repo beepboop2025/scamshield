@@ -1,0 +1,57 @@
+# Reference snippet for standalone Caddy installations. Production's
+# authoritative equivalent lives inside the api.seiche.info site in Seiche's
+# ops/Caddyfile so redeploys keep it. Only the three sanitized authenticated
+# aliases are reachable.
+(palimpsest_social_observations) {
+  route {
+    @social_latest {
+        method GET HEAD
+        path /palimpsest/social-observations/latest.json
+    }
+    handle @social_latest {
+        header Access-Control-Allow-Origin "https://palimpsest.info"
+        header Cache-Control "no-store, no-transform"
+        header Content-Disposition "inline"
+        header Content-Type "application/json"
+        header X-Content-Type-Options "nosniff"
+        uri strip_prefix /palimpsest/social-observations
+        root * /var/lib/scamshield/social-export/current
+        file_server
+    }
+
+    @social_versions {
+        method GET HEAD
+        path /palimpsest/social-observations/versions.jsonl
+    }
+    handle @social_versions {
+        header Access-Control-Allow-Origin "https://palimpsest.info"
+        header Cache-Control "no-store, no-transform"
+        header Content-Disposition "inline"
+        header Content-Type "application/x-ndjson"
+        header X-Content-Type-Options "nosniff"
+        uri strip_prefix /palimpsest/social-observations
+        root * /var/lib/scamshield/social-export/current
+        file_server
+    }
+
+    @social_hmac {
+        method GET HEAD
+        path /palimpsest/social-observations/hmac.json
+    }
+    handle @social_hmac {
+        header Access-Control-Allow-Origin "https://palimpsest.info"
+        header Cache-Control "no-store, no-transform"
+        header Content-Disposition "inline"
+        header Content-Type "application/json"
+        header X-Content-Type-Options "nosniff"
+        uri strip_prefix /palimpsest/social-observations
+        root * /var/lib/scamshield/social-export/current
+        file_server
+    }
+
+    @social_other path /palimpsest/social-observations /palimpsest/social-observations/ /palimpsest/social-observations/*
+    handle @social_other {
+        respond 404
+    }
+  }
+}

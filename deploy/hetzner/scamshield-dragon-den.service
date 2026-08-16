@@ -45,6 +45,7 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
 ReadOnlyPaths=/opt/scamshield /opt/palimpsest /etc/scamshield
 ReadWritePaths=/var/lib/scamshield/dragon-den /var/lib/scamshield/palimpsest-inbox
+InaccessiblePaths=/var/lib/scamshield/social-export
 BindPaths=/var/lib/scamshield/palimpsest-inbox:/opt/palimpsest/current/var/scamshield-inbox
 MemoryMax=768M
 TasksMax=128

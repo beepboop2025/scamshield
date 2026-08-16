@@ -19,6 +19,9 @@ getent group scamshield-runtime >/dev/null 2>&1 || \
   groupadd --system scamshield-runtime
 getent group intelligence-review >/dev/null 2>&1 || \
   groupadd --system intelligence-review
+getent group caddy >/dev/null 2>&1 || groupadd --system caddy
+getent group scamshield-social >/dev/null 2>&1 || \
+  groupadd --system scamshield-social
 if ! getent passwd scamshield >/dev/null 2>&1; then
   useradd --system --home-dir /var/lib/scamshield --shell /usr/sbin/nologin \
     --gid scamshield-runtime --groups scamshield scamshield
@@ -26,19 +29,68 @@ else
   usermod --gid scamshield-runtime --append --groups scamshield scamshield
 fi
 usermod --append --groups intelligence-review scamshield
+usermod --append --groups scamshield-social scamshield
+if ! getent passwd scamshield-social-export >/dev/null 2>&1; then
+  useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin \
+    --gid scamshield-social scamshield-social-export
+fi
+usermod --gid scamshield-social --append --groups scamshield-runtime \
+  scamshield-social-export
 
 install -d -o root -g root -m 0755 \
   /opt/scamshield /opt/scamshield/releases \
   /opt/palimpsest /opt/palimpsest/releases
-install -d -o scamshield -g scamshield -m 2770 /var/lib/scamshield
+# The root-owned sticky parent lets the scamshield group create SQLite sidecars
+# while preventing that hostile-input UID from replacing the exporter-owned
+# public child. Other users retain traverse-only access for Caddy.
+install -d -o root -g scamshield -m 3771 /var/lib/scamshield
 install -d -o scamshield -g scamshield-runtime -m 0700 \
   /var/lib/scamshield/telegram \
   /var/lib/scamshield/dragon-den \
   /var/lib/scamshield/palimpsest-inbox \
   /var/lib/scamshield/review
+for social_path in /var/lib/scamshield/social \
+                   /var/lib/scamshield/social-export; do
+  if [[ -e "$social_path" || -L "$social_path" ]]; then
+    [[ -d "$social_path" && ! -L "$social_path" ]] || {
+      echo "refusing unsafe social path: $social_path" >&2
+      exit 65
+    }
+  fi
+done
+social_output=/var/lib/scamshield/social-export
+install -d -o scamshield -g scamshield-social -m 2750 \
+  /var/lib/scamshield/social
+# Leave an existing export tree untouched until update.sh has validated both
+# releases and armed rollback. A fresh host gets the final dedicated boundary.
+if [[ ! -d "$social_output" ]]; then
+  install -d -o scamshield-social-export -g caddy -m 2750 "$social_output"
+fi
+social_db=/var/lib/scamshield/social/social-observations.db
+for social_db_file in "$social_db" "${social_db}-wal" "${social_db}-shm"; do
+  if [[ -e "$social_db_file" || -L "$social_db_file" ]]; then
+    [[ -f "$social_db_file" && ! -L "$social_db_file" ]] || {
+      echo "private social database member must be a regular file" >&2
+      exit 65
+    }
+    chown scamshield:scamshield-social "$social_db_file"
+    chmod 0640 "$social_db_file"
+  fi
+done
 install -d -o scamshield -g intelligence-review -m 2750 \
   /var/lib/scamshield/handoffs/narcoscope
 install -d -o root -g scamshield-runtime -m 0750 /etc/scamshield
+if [[ ! -e /etc/scamshield/social-export-hmac.key ]]; then
+  install -o root -g root -m 0600 /dev/null \
+    /etc/scamshield/social-export-hmac.key
+fi
+[[ -f /etc/scamshield/social-export-hmac.key && \
+   ! -L /etc/scamshield/social-export-hmac.key ]] || {
+  echo "social export signing credential must be a regular file" >&2
+  exit 65
+}
+chown root:root /etc/scamshield/social-export-hmac.key
+chmod 0600 /etc/scamshield/social-export-hmac.key
 if [[ -f /var/lib/scamshield/scamshield.db ]]; then
   chgrp scamshield /var/lib/scamshield/scamshield.db
   chmod g+rw /var/lib/scamshield/scamshield.db
@@ -122,6 +174,16 @@ fi
 
 target="$(git -C /opt/scamshield/source rev-parse origin/master)"
 bash /opt/scamshield/source/deploy/hetzner/update.sh "$target" --no-restart
+systemctl enable --now scamshield-social-export.timer >/dev/null
+
+# update.sh seeds the reviewed local projection on first installation. Refuse an
+# unexpected object here so an operator cannot mistake a symlink or directory
+# for the root-owned local authorization registry.
+social_registry=/etc/scamshield/palimpsest-social-sources.json
+if [[ -L "$social_registry" || ! -f "$social_registry" ]]; then
+  echo "social publisher registry was not installed as a regular file" >&2
+  exit 65
+fi
 
 if [[ -n "$deploy_key_file" ]]; then
   [[ -f "$deploy_key_file" ]] || {
@@ -150,14 +212,18 @@ was not restarted; on a fresh host the services remain stopped.
 Next:
   1. Edit /etc/scamshield/scamshield.env and keep it root:scamshield-runtime 0640.
   2. Confirm /etc/scamshield/channels.txt contains only public or authorized sources.
-  3. Edit /etc/scamshield/dragon-den-routes.json. For Telethon relay mode, add
+  3. Review /etc/scamshield/palimpsest-social-sources.json. Its CGTN row has the
+     sole reviewed Telegram binding; social collection stays disabled until the
+     registry and root-only HMAC credential are configured.
+  4. Edit /etc/scamshield/dragon-den-routes.json. For Telethon relay mode, add
      the dedicated bot as a post-only administrator in every destination; the
      authenticated monitor account observes the configured public sources.
-  4. Retire any old poller using either Bot API token.
-  5. systemctl enable --now scamshield-bot scamshield-feed.timer
-  6. For third-party sources, set DRAGON_DEN_RELAY_ENABLED=1 and keep the
+  5. Retire any old poller using either Bot API token.
+  6. systemctl enable --now scamshield-bot scamshield-feed.timer (the hardened
+     social export timer is already active and is a no-op while disabled)
+  7. For third-party sources, set DRAGON_DEN_RELAY_ENABLED=1 and keep the
      standalone scamshield-dragon-den service disabled.
-  7. Run /opt/scamshield/current/deploy/hetzner/authorize-monitor.sh once when
+  8. Run /opt/scamshield/current/deploy/hetzner/authorize-monitor.sh once when
      Telegram authorization is available. Until then the monitor stays disabled.
 
 The Telethon session will then live under /var/lib/scamshield and will not be

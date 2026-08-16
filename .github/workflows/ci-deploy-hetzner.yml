@@ -37,7 +37,7 @@ jobs:
       - name: Compile runtime entry points
         run: >-
           python -m compileall -q scamshield bot.py dragon_den_bot.py monitor.py login.py
-          export_monitoring_summary.py manage_sources.py
+          export_monitoring_summary.py export_social_observations.py manage_sources.py
           api/scamshield_api.py mcp/scamshield_mcp.py
       - name: Validate deployment scripts and systemd units
         shell: bash
@@ -48,9 +48,17 @@ jobs:
           sudo groupadd --system scamshield 2>/dev/null || true
           sudo groupadd --system scamshield-runtime 2>/dev/null || true
           sudo groupadd --system intelligence-review 2>/dev/null || true
+          sudo groupadd --system caddy 2>/dev/null || true
+          sudo groupadd --system scamshield-social 2>/dev/null || true
           sudo useradd --system --home-dir /var/lib/scamshield \
             --shell /usr/sbin/nologin --gid scamshield-runtime \
             --groups scamshield scamshield 2>/dev/null || true
+          sudo useradd --system --home-dir /nonexistent \
+            --shell /usr/sbin/nologin --gid scamshield-social \
+            scamshield-social-export 2>/dev/null || true
+          sudo usermod --append --groups scamshield-social scamshield
+          sudo usermod --append --groups scamshield-runtime \
+            scamshield-social-export
           sudo install -d \
             /opt/scamshield/current/.venv/bin \
             /opt/scamshield/current/deploy/hetzner \
@@ -60,6 +68,11 @@ jobs:
             /var/lib/scamshield/review \
             /var/lib/scamshield/handoffs/narcoscope \
             /etc/scamshield
+          sudo install -d -o scamshield -g scamshield-social -m 2750 \
+            /var/lib/scamshield/social
+          sudo install -d -o scamshield-social-export -g caddy -m 2750 \
+            /var/lib/scamshield/social-export \
+            /var/lib/scamshield/social-export/generations
           sudo ln -sf /usr/bin/python3 /opt/scamshield/current/.venv/bin/python
           sudo install -m 0755 deploy/hetzner/preflight.sh \
             deploy/hetzner/render_review_feed.sh \
@@ -67,6 +80,7 @@ jobs:
           sudo touch /opt/scamshield/current/bot.py \
             /opt/scamshield/current/monitor.py \
             /opt/scamshield/current/dragon_den_bot.py \
+            /opt/scamshield/current/export_social_observations.py \
             /etc/scamshield/scamshield.env
           systemd-analyze verify \
             "$GITHUB_WORKSPACE"/deploy/hetzner/*.service \

@@ -11,7 +11,7 @@ Type=notify
 NotifyAccess=main
 User=scamshield
 Group=scamshield-runtime
-SupplementaryGroups=scamshield
+SupplementaryGroups=scamshield scamshield-social
 WorkingDirectory=/opt/scamshield/current
 EnvironmentFile=/etc/scamshield/scamshield.env
 Environment=PYTHONUNBUFFERED=1
@@ -50,6 +50,9 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
 ReadOnlyPaths=/opt/scamshield /opt/palimpsest /etc/scamshield
 ReadWritePaths=/var/lib/scamshield
+# Keep the signer-owned public tree read-only even though its parent contains
+# monitor-owned state.
+ReadOnlyPaths=/var/lib/scamshield/social-export
 BindPaths=/var/lib/scamshield/palimpsest-inbox:/opt/palimpsest/current/var/scamshield-inbox
 MemoryMax=768M
 TasksMax=128

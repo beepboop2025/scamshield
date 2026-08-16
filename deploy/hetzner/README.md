@@ -23,6 +23,7 @@ Hetzner
   scamshield-monitor.service  configured public or operator-authorized sources
   scamshield-feed.timer       privacy-minimized, human-review-only artifacts
   scamshield-source-expansion.timer  bounded verified-public-source promotion
+  scamshield-social-export.timer  signed, metadata-link-only publisher posts
 ```
 
 ## Telegram boundary
@@ -208,6 +209,143 @@ message content.
 
 The review queue is not an automatic accusation feed. It excludes exact IOC
 values and message fragments and remains marked for human review.
+
+## Palimpsest social-observation lane
+
+The social lane reuses the monitor's legitimate Telethon access, but it is a
+separate opt-in sink with its own SQLite database. It does not alter the
+ScamShield analysis receipt, history cursor, or Dragon Den outbox. Any spool
+failure is caught before the analysis queue, so ScamShield continues operating.
+
+Collection uses two allowlists. A publisher must be a reviewed
+`telegram_channel` in `/etc/scamshield/palimpsest-social-sources.json` with a
+local `telegram_handle`, and that same handle must already be present in
+`/etc/scamshield/channels.txt`. Installation and upgrades seed the example only
+when the local file is absent; they never replace its operator-reviewed
+contents. The seeded eight-source file mirrors the public Palimpsest registry;
+its reviewed `cgtn-telegram` row alone adds the collection-only
+`"telegram_handle": "@CGTNOfficial_BJ"`. Add another binding only when
+Palimpsest also adds that publisher as a public `telegram_channel` source:
+
+```bash
+sudoedit /etc/scamshield/palimpsest-social-sources.json
+```
+
+Every row mirrors the exact public Palimpsest registry fields. A Telegram row
+may add one local-only field such as `"telegram_handle": "@publisher"`.
+Instagram rows are mirrored without that field and receive `not-attempted`
+coverage from ScamShield. The local handle is removed before computing
+`source_registry_sha256`, so the digest must equal the complete public registry,
+including any Instagram rows. Never add a hidden monitor source or numeric peer
+ID to this file.
+
+The first resolved encounter privately pins each publisher to its numeric
+Telegram peer ID. Numeric peer IDs, standalone native identity fields, complete
+text, media, sessions, and credentials do not enter the artifacts. The public
+canonical `t.me` permalink necessarily contains the public post number. The
+private directory is `scamshield:scamshield-social` mode 2750 so SQLite/WAL files
+inherit the dedicated group; its SQLite database, WAL, and SHM members are mode
+0640. Public records contain a stable opaque
+observation ID, append-only version IDs, bounded title/excerpt, canonical
+permalink, approved publisher article links, content digest, content type,
+append-only supersession edge, and explicit non-corroboration relation.
+
+Generate a dedicated HMAC key in the root-only systemd credential file. It is
+not present in the common environment inherited by the bot and monitor:
+
+```bash
+openssl rand -hex 32 | sudo tee /etc/scamshield/social-export-hmac.key >/dev/null
+sudo chown root:root /etc/scamshield/social-export-hmac.key
+sudo chmod 0600 /etc/scamshield/social-export-hmac.key
+sudoedit /etc/scamshield/scamshield.env  # set the opt-in flag to 1
+```
+
+Set `SCAMSHIELD_SOCIAL_OBSERVATIONS_ENABLED=1`. Preflight then fails closed
+unless the local registry's public projection exactly matches the pinned
+Palimpsest registry, the private path and modes are correct, and the signing
+credential is usable. Fresh installs start the timer; the default disabled flag
+makes each invocation a successful no-op until the lane is explicitly enabled.
+If an earlier experimental deployment left
+`/var/lib/scamshield/social-observations.db`, preflight refuses to initialize a
+second history. Stop the monitor and export timer, use SQLite's online backup
+API to copy that database into the fixed private path below, retain the old file
+as a rollback copy, restore the stated ownership/mode, and only then re-enable
+the lane. Do not move a live WAL database with ordinary file-copy commands.
+Each successful materialization creates one immutable generation and atomically
+switches `/var/lib/scamshield/social-export/current`. Terminal observation
+payloads are rejected before their aggregate exceeds 12 MiB, preserving
+headroom inside the 16 MiB latest-artifact cap; the ledger is capped at 64 MiB,
+and only four generations are retained.
+The public root and `generations` parent are owned
+`scamshield-social-export:caddy`, mode 2750; immutable bundle directories are
+mode 0750 and artifact files are mode 0640. The hostile-input monitor is not in
+the Caddy group and its systemd mount makes this subtree read-only. During the
+one-time ownership transition, an older monitor-owned tree is moved intact to a
+root-only `social-export.legacy.<timestamp>.<pid>` rollback path rather than
+recursively re-owned. `/var/lib/scamshield` is `root:scamshield` mode 3771: the
+sticky root-owned parent still permits the shared SQLite group to create
+sidecars, but the hostile-input service UID cannot replace the separately owned
+public child. Caddy receives traverse-only access to that child, and each
+hostile-input unit also makes the export subtree read-only or inaccessible. The
+directory contains:
+
+- `social-observations-latest.json` — current sanitized observations and
+  per-source coverage;
+- `social-observations-versions.jsonl` — append-only sanitized revisions; and
+- `social-observations.hmac.json` — SHA-256 and HMAC-SHA256 receipts for both
+  exact byte streams.
+
+The same atomic generation also contains the fixed importer aliases
+`latest.json`, `versions.jsonl`, and `hmac.json`. Expose only those three short
+names at `/palimpsest/social-observations/`; the descriptive filenames remain
+the authenticated artifact keys inside the sidecar.
+
+The authoritative route lives in Seiche's `ops/Caddyfile`, so its normal Caddy
+installer preserves it on redeploy. The ScamShield
+`palimpsest-social-observations.caddy` file is a matching reference fragment for
+standalone validation, not a second production source of truth.
+`palimpsest.info` is GitHub Pages and cannot route to this node. Inside the
+`api.seiche.info` site, use exact GET/HEAD matchers before an explicit subtree
+404, strip `/palimpsest/social-observations`, and serve from
+`/var/lib/scamshield/social-export/current`. The allowlist exposes only:
+
+- `https://api.seiche.info/palimpsest/social-observations/latest.json`
+- `https://api.seiche.info/palimpsest/social-observations/versions.jsonl`
+- `https://api.seiche.info/palimpsest/social-observations/hmac.json`
+
+Set the Palimpsest GitHub variable `SOCIAL_OBSERVATIONS_SNAPSHOT_URL` to the
+first URL; the importer derives the other two sibling URLs. Share the HMAC value
+separately as the `SOCIAL_OBSERVATIONS_HMAC_KEY` repository secret.
+
+If all active sources are currently failing, registry validation fails, the
+database is unavailable, or signing fails, the exporter does not switch the
+`current` symlink. The previous generation remains the last known good. Expose
+only that `current` directory through a fixed read-only HTTPS location; never
+serve the spool database, environment file, source registry, or generations
+parent. This is bounded reviewed-publisher coverage, not “all Telegram,” and
+every record remains `attributed-source-report-not-corroboration`.
+
+Each completed reconciliation also refetches the newest 50 channel messages.
+That bounded overlap recovers queued/offline edits and safe deletions behind the
+monotonic new-message cursor. Older edits or deletions can remain undetected; a
+larger or unbounded historical sweep is intentionally excluded from this
+metadata-minimizing lane.
+
+The v1 history is one append-only authenticated prefix, so it is never silently
+truncated or rotated. The spool computes the exact projected JSONL size and
+rejects the next revision before the 64 MiB boundary. It likewise refuses a
+terminal revision before the bounded 12 MiB payload budget can exhaust the
+16 MiB latest artifact. Either limit revokes freshness and preserves the last
+good generation. Resuming after that point requires a jointly versioned
+segmented/compaction contract in Palimpsest rather than an adapter-only
+retention shortcut.
+
+CGTN is a mixed world-news channel. Its adapter therefore accepts only posts
+matching a small declared China term list in the message or canonical approved
+article path; sports/world items such as Ronaldo or Paraguay updates are counted
+as `outside-scope` rejections. This deterministic boundary deliberately favors
+precision and can miss China-relevant posts that use none of the declared
+English or Chinese terms. Publisher identity alone never establishes relevance.
 
 The preferred Dragon Den mode is an ungated raw-publication lane inside the
 Telethon monitor. It accepts only public `@username` sources explicitly listed

@@ -1,0 +1,61 @@
+[Unit]
+Description=Export authenticated Palimpsest social observations
+After=scamshield-monitor.service
+
+[Service]
+Type=oneshot
+User=scamshield-social-export
+Group=scamshield-social
+SupplementaryGroups=scamshield-runtime
+WorkingDirectory=/opt/scamshield/current
+EnvironmentFile=/etc/scamshield/scamshield.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+# The oneshot needs only the social opt-in/staleness settings. Strip every
+# unrelated bot, user-session, analysis and provider secret inherited from the
+# shared operator file; the signing key arrives as a separate credential.
+UnsetEnvironment=SCAMSHIELD_TOKEN SCAMSHIELD_OWNER_ID DRAGON_DEN_BOT_TOKEN TELETHON_API_ID TELETHON_API_HASH SCAMSHIELD_PHONE SCAMSHIELD_PSEUDONYM_KEY COINGECKO_DEMO_API_KEY
+LoadCredential=social_export_hmac:/etc/scamshield/social-export-hmac.key
+UMask=0027
+ExecStartPre=/opt/scamshield/current/deploy/hetzner/preflight.sh social-export
+ExecStart=/opt/scamshield/current/.venv/bin/python /opt/scamshield/current/export_social_observations.py
+PrivateNetwork=true
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RemoveIPC=true
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+ReadOnlyPaths=/opt/scamshield /etc/scamshield /var/lib/scamshield
+ReadWritePaths=/var/lib/scamshield/social-export
+InaccessiblePaths=/etc/scamshield/scamshield.env
+InaccessiblePaths=/etc/scamshield/channels.txt
+InaccessiblePaths=/etc/scamshield/dragon-den-routes.json
+InaccessiblePaths=/var/lib/scamshield/telegram
+InaccessiblePaths=/var/lib/scamshield/dragon-den
+InaccessiblePaths=/var/lib/scamshield/palimpsest-inbox
+InaccessiblePaths=/var/lib/scamshield/review
+InaccessiblePaths=/var/lib/scamshield/handoffs
+InaccessiblePaths=-/var/lib/scamshield/scamshield.db
+InaccessiblePaths=-/var/lib/scamshield/scamshield.db-wal
+InaccessiblePaths=-/var/lib/scamshield/scamshield.db-shm
+MemoryMax=768M
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target
