@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from scamshield.mcp_contracts import SERVER_VERSION  # noqa: E402
 from scamshield.surfaces import (  # noqa: E402
     MAX_TEXT_BYTES,
     assess_message,
@@ -27,7 +28,7 @@ MAX_BODY_BYTES = MAX_TEXT_BYTES + 4096
 
 
 class ScamShieldAPI(BaseHTTPRequestHandler):
-    server_version = "ScamShieldAPI/1.0"
+    server_version = f"ScamShieldAPI/{SERVER_VERSION}"
 
     def _json(self, status: int, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -49,7 +50,11 @@ class ScamShieldAPI(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         routes = {
-            "/v1/health": lambda: {"ok": True, "service": "scamshield", "version": "1.0.0"},
+            "/v1/health": lambda: {
+                "ok": True,
+                "service": "scamshield",
+                "version": SERVER_VERSION,
+            },
             "/v1/capabilities": capabilities,
             "/v1/typologies": typology_catalog,
             "/v1/reporting": reporting_steps,

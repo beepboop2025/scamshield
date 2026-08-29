@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import http.client
 import importlib.util
 import json
 import sys
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -12,10 +14,11 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from scamshield.analysis import AnalysisService
-from scamshield.provenance import ProvenanceEngine
-from scamshield.rates import RateQuote
-from scamshield.surfaces import (
+from scamshield.analysis import AnalysisService  # noqa: E402
+from scamshield.mcp_contracts import SERVER_VERSION  # noqa: E402
+from scamshield.provenance import ProvenanceEngine  # noqa: E402
+from scamshield.rates import RateQuote  # noqa: E402
+from scamshield.surfaces import (  # noqa: E402
     ASSESSMENT_SCHEMA,
     MAX_TEXT_CHARS,
     assess_message,
@@ -54,6 +57,73 @@ def _load_mcp_module():
     assert spec and spec.loader
     spec.loader.exec_module(module)
     return module
+
+
+def _load_api_module():
+    path = ROOT / "api" / "scamshield_api.py"
+    spec = importlib.util.spec_from_file_location("scamshield_api_contract", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    return module
+
+
+class ReleaseIdentityContract(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.api = _load_api_module()
+        cls.mcp = _load_mcp_module()
+
+    def test_release_version_matches_every_local_surface(self):
+        manifest = json.loads((ROOT / "mcp" / "server.local.json").read_text())
+        openapi = json.loads((ROOT / "openapi.json").read_text())
+        initialized = self.mcp.dispatch({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"protocolVersion": "2026-07-28"},
+        })
+
+        self.assertEqual(SERVER_VERSION, "1.1.0")
+        self.assertEqual(capabilities()["version"], SERVER_VERSION)
+        self.assertEqual(openapi["info"]["version"], SERVER_VERSION)
+        self.assertEqual(manifest["version"], SERVER_VERSION)
+        self.assertEqual(
+            initialized["result"]["serverInfo"]["version"],
+            SERVER_VERSION,
+        )
+        self.assertEqual(
+            self.api.ScamShieldAPI.server_version,
+            f"ScamShieldAPI/{SERVER_VERSION}",
+        )
+
+        server = self.api.ThreadingHTTPServer(
+            ("127.0.0.1", 0),
+            self.api.ScamShieldAPI,
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            connection = http.client.HTTPConnection(
+                "127.0.0.1",
+                server.server_address[1],
+                timeout=3,
+            )
+            connection.request("GET", "/v1/health")
+            response = connection.getresponse()
+            health = json.loads(response.read())
+            self.assertEqual(response.status, 200)
+            self.assertEqual(health["version"], SERVER_VERSION)
+            self.assertTrue(
+                response.getheader("Server").startswith(
+                    f"ScamShieldAPI/{SERVER_VERSION} "
+                )
+            )
+            connection.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
 
 
 class PublicSurfaceContract(unittest.TestCase):
