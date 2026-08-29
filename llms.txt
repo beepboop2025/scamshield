@@ -12,7 +12,14 @@ ScamShield by Palimpsest performs evidence-bounded triage of user-supplied suspi
 - Local REST API: `python3 api/scamshield_api.py`
 - OpenAPI: `openapi.json`
 - Local MCP server: `python3 mcp/scamshield_mcp.py`
+- Local MCP install manifest: `mcp/server.local.json`
+- MCP client template: `mcp/client-config.example.json`
+- MCP protocols: `2026-07-28`, `2025-11-25`, `2025-06-18`, `2025-03-26`
 - MCP tools: `list_capabilities`, `assess_message`, `list_typologies`, `get_reporting_steps`
+- Every tool returns matching JSON-encoded text and typed `structuredContent`
+  under a closed JSON Schema 2020-12 `outputSchema`.
+- Visibility: local/private stdio only. There is no public remote endpoint,
+  MCP Registry publication, well-known MCP document, or A2A Agent Card.
 - Product card: `product-card.json`
 
 ## Privacy and interpretation

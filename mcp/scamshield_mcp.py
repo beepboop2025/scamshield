@@ -18,51 +18,16 @@ from scamshield.surfaces import (  # noqa: E402
     reporting_steps,
     typology_catalog,
 )
+from scamshield.mcp_contracts import (  # noqa: E402
+    LATEST_PROTOCOL_VERSION,
+    SERVER_VERSION,
+    SUPPORTED_PROTOCOL_VERSIONS,
+    TOOL_CONTRACTS,
+    TOOL_NAMES,
+)
 
-PROTOCOL_VERSION = "2025-06-18"
-SUPPORTED_PROTOCOL_VERSIONS = frozenset({"2025-03-26", PROTOCOL_VERSION})
-SERVER_VERSION = "1.0.0"
-
-TOOLS = [
-    {
-        "name": "list_capabilities",
-        "title": "List ScamShield capabilities",
-        "description": "Discover ScamShield's supported, privacy-bounded interfaces.",
-        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
-        "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False},
-    },
-    {
-        "name": "assess_message",
-        "title": "Assess a suspicious message",
-        "description": (
-            "Classify one user-supplied message in memory. Returns pattern evidence, "
-            "limits, and reporting steps; never returns raw text or IOC values."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "text": {"type": "string", "minLength": 1, "maxLength": 8000},
-            },
-            "required": ["text"],
-            "additionalProperties": False,
-        },
-        "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": True},
-    },
-    {
-        "name": "list_typologies",
-        "title": "List evidence typologies",
-        "description": "Inspect the versioned ScamShield typology catalog and its limits.",
-        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
-        "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False},
-    },
-    {
-        "name": "get_reporting_steps",
-        "title": "Get scam reporting steps",
-        "description": "Return preservation, reporting, and immediate-safety guidance.",
-        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
-        "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False},
-    },
-]
+PROTOCOL_VERSION = LATEST_PROTOCOL_VERSION
+TOOLS = list(TOOL_CONTRACTS)
 
 
 def _tool_result(payload: dict[str, Any]) -> dict[str, Any]:
@@ -72,6 +37,18 @@ def _tool_result(payload: dict[str, Any]) -> dict[str, Any]:
         "structuredContent": payload,
         "isError": False,
     }
+
+
+def _validate_tool_arguments(name: Any, arguments: dict[str, Any]) -> str | None:
+    if not isinstance(name, str) or name not in TOOL_NAMES:
+        return f"unknown tool {name!r}"
+    allowed = {"text"} if name == "assess_message" else set()
+    unexpected = sorted(set(arguments) - allowed)
+    if unexpected:
+        return f"unexpected argument(s): {', '.join(unexpected)}"
+    if name == "assess_message" and "text" not in arguments:
+        return "text is required"
+    return None
 
 
 def dispatch(request: Any) -> dict[str, Any] | None:
@@ -106,9 +83,7 @@ def dispatch(request: Any) -> dict[str, Any] | None:
     if method == "initialize":
         params = request.get("params")
         requested = params.get("protocolVersion") if isinstance(params, dict) else None
-        negotiated = (
-            requested if requested in SUPPORTED_PROTOCOL_VERSIONS else PROTOCOL_VERSION
-        )
+        negotiated = requested if requested in SUPPORTED_PROTOCOL_VERSIONS else PROTOCOL_VERSION
         return success({
             "protocolVersion": negotiated,
             "capabilities": {"tools": {"listChanged": False}},
@@ -129,6 +104,9 @@ def dispatch(request: Any) -> dict[str, Any] | None:
         args = params.get("arguments", {})
         if not isinstance(args, dict):
             return error(-32602, "arguments must be an object")
+        argument_error = _validate_tool_arguments(name, args)
+        if argument_error:
+            return error(-32602, argument_error)
         try:
             if name == "list_capabilities":
                 payload = capabilities()
@@ -138,8 +116,6 @@ def dispatch(request: Any) -> dict[str, Any] | None:
                 payload = typology_catalog()
             elif name == "get_reporting_steps":
                 payload = reporting_steps()
-            else:
-                return error(-32602, f"unknown tool {name!r}")
         except (TypeError, ValueError) as exc:
             return error(-32602, str(exc))
         except Exception:

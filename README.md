@@ -137,7 +137,11 @@ These developer surfaces are deliberately non-persisting: they do not write
 to the IOC/review stores, never invoke the Palimpsest bridge, and omit both the
 submitted text and exact IOC values from responses. See
 [`docs/API-MCP.md`](docs/API-MCP.md), [`openapi.json`](openapi.json), and
-[`llms.txt`](llms.txt).
+[`llms.txt`](llms.txt). MCP clients can discover the exact local-only install
+boundary in [`mcp/server.local.json`](mcp/server.local.json) and copy
+[`mcp/client-config.example.json`](mcp/client-config.example.json). The server
+supports MCP `2026-07-28` plus the three prior dated protocol versions and
+publishes JSON Schema 2020-12 output contracts for all four tools.
 
 Reviewed product and evidence releases are listed in [`news/feed.json`](news/feed.json).
 This is the only ScamShield source eligible for the shared Evidence Signal
