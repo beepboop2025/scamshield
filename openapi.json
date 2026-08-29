@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "ScamShield Local Assessment API",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "description": "A loopback-first, non-persisting interface for evidence-bounded suspicious-message triage. Submitted text is not stored or returned. Exact IOC values are not returned."
   },
   "servers": [

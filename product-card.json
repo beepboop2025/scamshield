@@ -12,6 +12,7 @@
     "public_guide": "https://palimpsest.info/guides/telegram-scam-message-checker/",
     "rest": "local-only; see openapi.json",
     "mcp": "stdio; run python3 mcp/scamshield_mcp.py",
+    "mcp_install_manifest": "mcp/server.local.json",
     "intelligence_pack": "scamshield/data/intelligence-pack-v1.json"
   },
   "trust": {

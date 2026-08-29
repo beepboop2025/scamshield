@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import http.client
 import importlib.util
 import json
 import sys
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -12,14 +14,16 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from scamshield.analysis import AnalysisService
-from scamshield.provenance import ProvenanceEngine
-from scamshield.rates import RateQuote
-from scamshield.surfaces import (
+from scamshield.analysis import AnalysisService  # noqa: E402
+from scamshield.mcp_contracts import SERVER_VERSION  # noqa: E402
+from scamshield.provenance import ProvenanceEngine  # noqa: E402
+from scamshield.rates import RateQuote  # noqa: E402
+from scamshield.surfaces import (  # noqa: E402
     ASSESSMENT_SCHEMA,
     MAX_TEXT_CHARS,
     assess_message,
     capabilities,
+    reporting_steps,
     typology_catalog,
 )
 
@@ -55,11 +59,87 @@ def _load_mcp_module():
     return module
 
 
+def _load_api_module():
+    path = ROOT / "api" / "scamshield_api.py"
+    spec = importlib.util.spec_from_file_location("scamshield_api_contract", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    return module
+
+
+class ReleaseIdentityContract(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.api = _load_api_module()
+        cls.mcp = _load_mcp_module()
+
+    def test_release_version_matches_every_local_surface(self):
+        manifest = json.loads((ROOT / "mcp" / "server.local.json").read_text())
+        openapi = json.loads((ROOT / "openapi.json").read_text())
+        initialized = self.mcp.dispatch({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"protocolVersion": "2026-07-28"},
+        })
+
+        self.assertEqual(SERVER_VERSION, "1.1.0")
+        self.assertEqual(capabilities()["version"], SERVER_VERSION)
+        self.assertEqual(openapi["info"]["version"], SERVER_VERSION)
+        self.assertEqual(manifest["version"], SERVER_VERSION)
+        self.assertEqual(
+            initialized["result"]["serverInfo"]["version"],
+            SERVER_VERSION,
+        )
+        self.assertEqual(
+            self.api.ScamShieldAPI.server_version,
+            f"ScamShieldAPI/{SERVER_VERSION}",
+        )
+
+        server = self.api.ThreadingHTTPServer(
+            ("127.0.0.1", 0),
+            self.api.ScamShieldAPI,
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            connection = http.client.HTTPConnection(
+                "127.0.0.1",
+                server.server_address[1],
+                timeout=3,
+            )
+            connection.request("GET", "/v1/health")
+            response = connection.getresponse()
+            health = json.loads(response.read())
+            self.assertEqual(response.status, 200)
+            self.assertEqual(health["version"], SERVER_VERSION)
+            self.assertTrue(
+                response.getheader("Server").startswith(
+                    f"ScamShieldAPI/{SERVER_VERSION} "
+                )
+            )
+            connection.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+
+
 class PublicSurfaceContract(unittest.TestCase):
     def test_capabilities_make_privacy_and_transport_explicit(self):
         payload = capabilities()
         self.assertEqual(payload["product"], "ScamShield")
         self.assertEqual(payload["interfaces"]["mcp"]["transport"], "stdio")
+        self.assertEqual(payload["interfaces"]["mcp"]["visibility"], "local-only")
+        self.assertEqual(
+            payload["interfaces"]["mcp"]["protocol_versions"][0],
+            "2026-07-28",
+        )
+        self.assertEqual(
+            payload["interfaces"]["mcp"]["manifest"],
+            "mcp/server.local.json",
+        )
         self.assertEqual(payload["interfaces"]["rest"]["transport"], "loopback HTTP by default")
         self.assertFalse(payload["privacy"]["bridge_side_effects"])
         self.assertFalse(payload["privacy"]["ioc_values_returned"])
@@ -99,7 +179,7 @@ class PublicSurfaceContract(unittest.TestCase):
 
     def test_openapi_matches_local_safety_boundary(self):
         payload = json.loads((ROOT / "openapi.json").read_text())
-        self.assertEqual(payload["info"]["version"], "1.0.0")
+        self.assertEqual(payload["info"]["version"], "1.1.0")
         self.assertEqual(payload["servers"][0]["url"], "http://127.0.0.1:8794")
         self.assertIn("/v1/assess", payload["paths"])
 
@@ -109,20 +189,84 @@ class MCPContract(unittest.TestCase):
     def setUpClass(cls):
         cls.mcp = _load_mcp_module()
 
-    def test_initialize_and_tools_list(self):
-        initialized = self.mcp.dispatch({
+    def test_initialize_negotiates_current_and_prior_protocols(self):
+        for request_id, protocol in enumerate(
+            ("2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"),
+            start=1,
+        ):
+            with self.subTest(protocol=protocol):
+                initialized = self.mcp.dispatch({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "initialize",
+                    "params": {"protocolVersion": protocol},
+                })
+                self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.1.0")
+                self.assertEqual(initialized["result"]["protocolVersion"], protocol)
+
+        fallback = self.mcp.dispatch({
             "jsonrpc": "2.0",
-            "id": 1,
+            "id": 9,
             "method": "initialize",
-            "params": {"protocolVersion": "2025-03-26"},
+            "params": {"protocolVersion": "2099-01-01"},
         })
-        self.assertEqual(initialized["result"]["serverInfo"]["version"], "1.0.0")
-        self.assertEqual(initialized["result"]["protocolVersion"], "2025-03-26")
+        self.assertEqual(fallback["result"]["protocolVersion"], "2026-07-28")
+
+    def test_tools_list_has_closed_typed_contracts_and_annotations(self):
         listed = self.mcp.dispatch({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
-        names = {item["name"] for item in listed["result"]["tools"]}
+        tools = listed["result"]["tools"]
+        names = {item["name"] for item in tools}
         self.assertEqual(names, {
             "list_capabilities", "assess_message", "list_typologies", "get_reporting_steps",
         })
+        for tool in tools:
+            with self.subTest(tool=tool["name"]):
+                self.assertEqual(
+                    tool["inputSchema"]["$schema"],
+                    "https://json-schema.org/draft/2020-12/schema",
+                )
+                self.assertEqual(
+                    tool["outputSchema"]["$schema"],
+                    "https://json-schema.org/draft/2020-12/schema",
+                )
+                self.assertFalse(tool["outputSchema"]["additionalProperties"])
+                self.assertTrue(tool["annotations"]["readOnlyHint"])
+                self.assertTrue(tool["annotations"]["idempotentHint"])
+                self.assertFalse(tool["annotations"]["destructiveHint"])
+
+    def test_every_tool_returns_text_and_structured_content_in_parity(self):
+        expected_by_name = {
+            "list_capabilities": capabilities(),
+            "assess_message": assess_message(
+                "A suspicious payment request for review",
+                service=_service(),
+            ),
+            "list_typologies": typology_catalog(),
+            "get_reporting_steps": reporting_steps(),
+        }
+        patches = {
+            "list_capabilities": "capabilities",
+            "assess_message": "assess_message",
+            "list_typologies": "typology_catalog",
+            "get_reporting_steps": "reporting_steps",
+        }
+        for request_id, (name, expected) in enumerate(expected_by_name.items(), start=20):
+            arguments = {"text": "ignored by patched analyzer"} if name == "assess_message" else {}
+            with self.subTest(tool=name), patch.object(
+                self.mcp,
+                patches[name],
+                return_value=expected,
+            ):
+                response = self.mcp.dispatch({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "tools/call",
+                    "params": {"name": name, "arguments": arguments},
+                })
+                result = response["result"]
+                self.assertEqual(result["structuredContent"], expected)
+                self.assertEqual(json.loads(result["content"][0]["text"]), expected)
+                self.assertFalse(result["isError"])
 
     def test_assess_tool_returns_structured_content(self):
         fake = {"schema_version": ASSESSMENT_SCHEMA, "result": {"tier": "WATCH"}}
@@ -144,6 +288,45 @@ class MCPContract(unittest.TestCase):
             "params": {"name": "assess_message", "arguments": {}},
         })
         self.assertEqual(response["error"]["code"], -32602)
+
+        unexpected = self.mcp.dispatch({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "tools/call",
+            "params": {
+                "name": "assess_message",
+                "arguments": {"text": "hello", "persist": True},
+            },
+        })
+        self.assertEqual(unexpected["error"]["code"], -32602)
+        self.assertIn("unexpected argument", unexpected["error"]["message"])
+
+        no_arg_tool = self.mcp.dispatch({
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "tools/call",
+            "params": {"name": "list_capabilities", "arguments": {"verbose": True}},
+        })
+        self.assertEqual(no_arg_tool["error"]["code"], -32602)
+
+    def test_local_manifest_is_truthful_and_installable_without_publication_claims(self):
+        manifest = json.loads((ROOT / "mcp" / "server.local.json").read_text())
+        template = json.loads((ROOT / "mcp" / "client-config.example.json").read_text())
+        self.assertEqual(manifest["version"], "1.1.0")
+        self.assertEqual(manifest["visibility"], "local-only")
+        self.assertEqual(manifest["transport"]["type"], "stdio")
+        self.assertIsNone(manifest["privacy"]["remote_endpoint"])
+        self.assertFalse(manifest["publication"]["mcp_registry"])
+        self.assertFalse(manifest["publication"]["public_remote_server"])
+        self.assertFalse(manifest["publication"]["a2a_agent_card"])
+        self.assertEqual(
+            set(manifest["tools"]),
+            {item["name"] for item in self.mcp.TOOLS},
+        )
+        self.assertEqual(
+            template["mcpServers"]["scamshield"]["command"],
+            "python3",
+        )
 
     def test_every_valid_notification_is_processed_without_a_response(self):
         self.assertIsNone(self.mcp.dispatch({"jsonrpc": "2.0", "method": "ping"}))

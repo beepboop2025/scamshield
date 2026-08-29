@@ -14,10 +14,11 @@ from pathlib import Path
 from typing import Any
 
 from .analysis import AnalysisService, ObservationContext
+from .mcp_contracts import SERVER_VERSION, SUPPORTED_PROTOCOL_VERSIONS
 from .provenance import ProvenanceEngine, load_intelligence_pack
 from .rates import MarketRateOracle
 
-SURFACE_VERSION = "1.0.0"
+SURFACE_VERSION = SERVER_VERSION
 ASSESSMENT_SCHEMA = "scamshield-public-assessment/v1"
 MAX_TEXT_CHARS = 8_000
 MAX_TEXT_BYTES = 32_000
@@ -75,10 +76,20 @@ def capabilities() -> dict[str, Any]:
             },
             "rest": {
                 "transport": "loopback HTTP by default",
-                "resources": ["capabilities", "typologies", "assess", "health"],
+                "resources": [
+                    "capabilities",
+                    "typologies",
+                    "reporting",
+                    "assess",
+                    "health",
+                    "openapi",
+                ],
             },
             "mcp": {
                 "transport": "stdio",
+                "visibility": "local-only",
+                "protocol_versions": sorted(SUPPORTED_PROTOCOL_VERSIONS, reverse=True),
+                "manifest": "mcp/server.local.json",
                 "tools": [
                     "list_capabilities",
                     "assess_message",

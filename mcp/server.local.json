@@ -1,0 +1,48 @@
+{
+  "schema_version": "scamshield-local-mcp-install/v1",
+  "name": "io.github.beepboop2025/scamshield",
+  "display_name": "ScamShield",
+  "version": "1.1.0",
+  "description": "Local, privacy-bounded suspicious-message triage over MCP stdio.",
+  "visibility": "local-only",
+  "transport": {
+    "type": "stdio",
+    "command": "python3",
+    "args": [
+      "<absolute-path-to-checkout>/mcp/scamshield_mcp.py"
+    ]
+  },
+  "install": {
+    "python": ">=3.10",
+    "command": "python3 -m pip install -r requirements.txt",
+    "client_config_template": "mcp/client-config.example.json"
+  },
+  "protocol_versions": [
+    "2026-07-28",
+    "2025-11-25",
+    "2025-06-18",
+    "2025-03-26"
+  ],
+  "tools": [
+    "list_capabilities",
+    "assess_message",
+    "list_typologies",
+    "get_reporting_steps"
+  ],
+  "privacy": {
+    "assessment_storage": "none",
+    "raw_text_returned": false,
+    "ioc_values_returned": false,
+    "remote_endpoint": null
+  },
+  "publication": {
+    "mcp_registry": false,
+    "a2a_agent_card": false,
+    "public_remote_server": false
+  },
+  "source": {
+    "repository": "https://github.com/beepboop2025/scamshield",
+    "entrypoint": "mcp/scamshield_mcp.py",
+    "documentation": "docs/API-MCP.md"
+  }
+}
