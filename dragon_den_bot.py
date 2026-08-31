@@ -51,6 +51,7 @@ OUTBOX_PATH = Path(
     os.environ.get("DRAGON_DEN_DB", "dragon-den.db")
 ).expanduser()
 PROTECT_CONTENT = os.environ.get("DRAGON_DEN_PROTECT_CONTENT", "1") == "1"
+EXPECTED_BOT_USERNAME = "DragonDenWhispersBot"
 
 
 class PartialForwardError(RuntimeError):
@@ -323,9 +324,53 @@ async def on_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
 
 
-async def _verify_admin(bot: Any, chat_id: str, *, purpose: str) -> None:
+async def _verify_bot_identity(bot: Any) -> int:
+    """Bind this high-risk publisher to its one expected BotFather identity."""
+
     me = await bot.get_me()
-    member = await bot.get_chat_member(chat_id, me.id)
+    username = getattr(me, "username", None)
+    bot_id = getattr(me, "id", None)
+    if username != EXPECTED_BOT_USERNAME:
+        actual = f"@{username}" if isinstance(username, str) and username else "<unset>"
+        raise RuntimeError(
+            "Dragon Den token identity mismatch: expected "
+            f"@{EXPECTED_BOT_USERNAME}, got {actual}"
+        )
+    if type(bot_id) is not int or bot_id <= 0:
+        raise RuntimeError("Dragon Den getMe returned an invalid bot ID")
+    return bot_id
+
+
+async def _verify_chat_identity(bot: Any, chat_id: str, *, purpose: str) -> None:
+    """Resolve a configured destination/source and prove Telegram agrees."""
+
+    chat = await bot.get_chat(chat_id)
+    if chat_id.startswith("@"):
+        username = getattr(chat, "username", None)
+        if (
+            not isinstance(username, str)
+            or f"@{username}".casefold() != chat_id.casefold()
+        ):
+            raise RuntimeError(
+                f"Dragon Den {purpose} does not resolve to configured username"
+            )
+        return
+    resolved_id = getattr(chat, "id", None)
+    if type(resolved_id) is not int or str(resolved_id) != chat_id:
+        raise RuntimeError(
+            f"Dragon Den {purpose} does not resolve to configured chat ID"
+        )
+
+
+async def _verify_admin(
+    bot: Any,
+    chat_id: str,
+    bot_id: int,
+    *,
+    purpose: str,
+) -> None:
+    await _verify_chat_identity(bot, chat_id, purpose=purpose)
+    member = await bot.get_chat_member(chat_id, bot_id)
     status = str(member.status).lower()
     if status not in {"administrator", "creator", "owner"}:
         raise RuntimeError(f"Dragon Den bot is not an administrator in {purpose}")
@@ -336,27 +381,40 @@ async def _verify_admin(bot: Any, chat_id: str, *, purpose: str) -> None:
 
 
 async def post_init(app: Application) -> None:
+    bot_id = await _verify_bot_identity(app.bot)
     runtime = DragonDenRuntime()
-    app.bot_data["dragon_den_runtime"] = runtime
-    await app.bot.set_my_name("Whispers from the Dragon Den")
-    await app.bot.set_my_short_description(
-        "Raw, automatic forwards from configured public channels. Unverified."
-    )
-    await app.bot.set_my_description(
-        "Whispers from the Dragon Den mirrors every post from an explicit public-"
-        "channel allowlist into configured destination channels. Posts are raw, "
-        "automatic, and unverified; they may be false or malicious. Palimpsest "
-        "publishes only a separately reviewed and sanitized projection."
-    )
-    for destination in runtime.routes.destinations.values():
-        await _verify_admin(
-            app.bot, destination.chat_id, purpose=f"destination {destination.id}"
+    try:
+        for destination in runtime.routes.destinations.values():
+            await _verify_admin(
+                app.bot,
+                destination.chat_id,
+                bot_id,
+                purpose=f"destination {destination.id}",
+            )
+        for route in runtime.routes.sources.values():
+            await _verify_admin(
+                app.bot,
+                route.source,
+                bot_id,
+                purpose=f"source {route.source}",
+            )
+        await app.bot.set_my_name("Whispers from the Dragon Den")
+        await app.bot.set_my_short_description(
+            "Raw, automatic forwards from configured public channels. Unverified."
         )
-    for route in runtime.routes.sources.values():
-        await _verify_admin(app.bot, route.source, purpose=f"source {route.source}")
-    runtime.worker = app.create_task(
-        _delivery_loop(app, runtime), name="dragon-den-delivery"
-    )
+        await app.bot.set_my_description(
+            "Whispers from the Dragon Den mirrors every post from an explicit public-"
+            "channel allowlist into configured destination channels. Posts are raw, "
+            "automatic, and unverified; they may be false or malicious. Palimpsest "
+            "publishes only a separately reviewed and sanitized projection."
+        )
+        runtime.worker = app.create_task(
+            _delivery_loop(app, runtime), name="dragon-den-delivery"
+        )
+    except BaseException:
+        runtime.close()
+        raise
+    app.bot_data["dragon_den_runtime"] = runtime
     log.info(
         "Dragon Den ready: %d public source(s), %d destination(s), protect=%s",
         len(runtime.routes.sources),
