@@ -163,10 +163,90 @@ check_dragon_den() {
   [[ -d "$(dirname "$dragon_db")" && -w "$(dirname "$dragon_db")" ]] || \
     fail "Dragon Den database parent is not writable"
   /opt/scamshield/current/.venv/bin/python - "$routes" <<'PY' || \
-    fail "Dragon Den route registry is invalid"
+    fail "Dragon Den identity or destination preflight failed"
+import json
+import os
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
 from scamshield.dragon_den import load_routes
-load_routes(sys.argv[1])
+
+EXPECTED_USERNAME = "DragonDenWhispersBot"
+token = os.environ["DRAGON_DEN_BOT_TOKEN"]
+routes = load_routes(sys.argv[1])
+
+
+def bot_api(method, payload):
+    request = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/{method}",
+        data=urllib.parse.urlencode(payload).encode("utf-8"),
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            raw = response.read(1024 * 1024)
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"{method} failed with HTTP {exc.code}") from None
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError(
+            f"{method} transport failed ({type(exc).__name__})"
+        ) from None
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise RuntimeError(f"{method} returned invalid JSON") from None
+    if not isinstance(value, dict) or value.get("ok") is not True:
+        error_code = value.get("error_code", "unknown") if isinstance(value, dict) else "unknown"
+        raise RuntimeError(f"{method} failed with Bot API code {error_code}")
+    result = value.get("result")
+    if not isinstance(result, dict):
+        raise RuntimeError(f"{method} returned an invalid result")
+    return result
+
+
+me = bot_api("getMe", {})
+if me.get("username") != EXPECTED_USERNAME:
+    raise RuntimeError(
+        f"token is not the exact expected @{EXPECTED_USERNAME} identity"
+    )
+bot_id = me.get("id")
+if type(bot_id) is not int or bot_id <= 0:
+    raise RuntimeError("getMe returned an invalid bot ID")
+
+for destination in routes.destinations.values():
+    chat = bot_api("getChat", {"chat_id": destination.chat_id})
+    if chat.get("type") != "channel":
+        raise RuntimeError(f"destination {destination.id} is not a channel")
+    if destination.chat_id.startswith("@"):
+        username = chat.get("username")
+        if (
+            not isinstance(username, str)
+            or f"@{username}".casefold() != destination.chat_id.casefold()
+        ):
+            raise RuntimeError(
+                f"destination {destination.id} username does not match its route"
+            )
+    elif str(chat.get("id", "")) != destination.chat_id:
+        raise RuntimeError(
+            f"destination {destination.id} ID does not match its route"
+        )
+    member = bot_api(
+        "getChatMember",
+        {"chat_id": destination.chat_id, "user_id": bot_id},
+    )
+    if member.get("status") not in {"administrator", "creator"}:
+        raise RuntimeError(
+            f"@{EXPECTED_USERNAME} is not an administrator in destination "
+            f"{destination.id}"
+        )
+    if member.get("status") == "administrator" and member.get(
+        "can_post_messages"
+    ) is not True:
+        raise RuntimeError(
+            f"@{EXPECTED_USERNAME} cannot post in destination {destination.id}"
+        )
 PY
 }
 
@@ -194,6 +274,16 @@ db="${SCAMSHIELD_DB:-/var/lib/scamshield/scamshield.db}"
   fail "database parent is not writable"
 
 if [[ "$component" == "monitor" && "$relay_enabled" == "1" ]]; then
+  command -v systemctl >/dev/null || \
+    fail "systemctl is required to enforce single-owner Dragon Den updates"
+  if systemctl is-active --quiet scamshield-dragon-den.service; then
+    fail "standalone bot service must be inactive while relay mode owns updates"
+  fi
+  dragon_den_enabled="$(
+    systemctl is-enabled scamshield-dragon-den.service 2>/dev/null || true
+  )"
+  [[ "$dragon_den_enabled" == "disabled" || "$dragon_den_enabled" == "masked" ]] || \
+    fail "standalone bot service must be disabled or masked while relay mode owns updates"
   check_dragon_den
 fi
 
@@ -202,6 +292,9 @@ if [[ "$component" == "bot" ]]; then
     fail "SCAMSHIELD_TOKEN is missing or malformed"
   [[ "${SCAMSHIELD_OWNER_ID:-}" =~ ^[0-9]+$ ]] || \
     fail "SCAMSHIELD_OWNER_ID must be numeric"
+  [[ "${SCAMSHIELD_PUBLIC_SURFACE_POLICY:-required}" =~ \
+     ^(required|serve-degraded)$ ]] || \
+    fail "SCAMSHIELD_PUBLIC_SURFACE_POLICY must be required or serve-degraded"
   exit 0
 fi
 

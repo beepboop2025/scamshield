@@ -101,7 +101,15 @@ schema. See [`docs/DRAGON_DEN.md`](docs/DRAGON_DEN.md).
 
 The public bot menu also exposes `/how`, `/typologies`, `/privacy`, `/explore`,
 and `/help`. Startup synchronizes the bot name, descriptions, and command menu
-with the shipped behavior. Set `EVIDENCE_CHANNEL_URL` after the shared
+with the shipped behavior and reads each field back from Telegram. The default
+`required` policy refuses to label stale or unreadable metadata configured;
+`serve-degraded` must be selected explicitly to keep private Shield polling
+online while logging a degraded public surface. ScamShield has no reversible
+Telegram-user index, so it does not offer a misleading `/delete_me` command.
+`/privacy` points specific access, correction, and deletion requests to the
+same `mrinal@liquilens.in` route published by the LiquiLens privacy page.
+
+Set `EVIDENCE_CHANNEL_URL` after the shared
 NarcoScope–Palimpsest–ScamShield news channel exists to add its follow button;
 `PALIMPSEST_URL` and `NARCOSCOPE_URL` can override the related-product links.
 The bot also links to the crawlable
@@ -202,6 +210,7 @@ Useful optional settings:
 | `DRAGON_DEN_DB` | `dragon-den.db` | Private reference-only delivery outbox |
 | `DRAGON_DEN_PROTECT_CONTENT` | `1` | Prevent downstream forwarding/saving without changing raw content |
 | `SCAMSHIELD_GUARDIAN` | `0` | Enable administrator-authorized group mode |
+| `SCAMSHIELD_PUBLIC_SURFACE_POLICY` | `required` | Require exact Telegram metadata readback; `serve-degraded` is an explicit private-polling continuity override |
 | `SCAMSHIELD_DB` | `scamshield.db` | Shared SQLite assessment/IOC/coverage store |
 | `SCAMSHIELD_SESSION` | `scamshield_monitor` in the repository | Persistent Telethon session base path |
 | `SCAMSHIELD_CHANNELS_FILE` | `channels.txt` in the repository | Public/authorized source registry |

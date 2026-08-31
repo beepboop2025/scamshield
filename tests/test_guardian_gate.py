@@ -15,12 +15,14 @@ the observable we care about.
 
 import asyncio
 import importlib
+import os
 import re
 import sys
 import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[0].parent))
 
@@ -535,6 +537,137 @@ class GuardianCopyMatchesBehaviour(unittest.TestCase):
             mod.on_feedback,
         ):
             self.assertIn(callback, callbacks)
+
+    def test_public_metadata_is_written_then_read_back_exactly(self):
+        mod = _load_bot(None)
+
+        class Bot:
+            def __init__(self):
+                self.name = "stale"
+                self.short_description = "stale"
+                self.description = "stale"
+                self.commands = ()
+                self.calls = []
+
+            async def set_my_name(self, value):
+                self.calls.append("set_name")
+                self.name = value
+
+            async def set_my_short_description(self, value):
+                self.calls.append("set_short_description")
+                self.short_description = value
+
+            async def set_my_description(self, value):
+                self.calls.append("set_description")
+                self.description = value
+
+            async def set_my_commands(self, value):
+                self.calls.append("set_commands")
+                self.commands = value
+
+            async def get_my_name(self):
+                self.calls.append("get_name")
+                return types.SimpleNamespace(name=self.name)
+
+            async def get_my_short_description(self):
+                self.calls.append("get_short_description")
+                return types.SimpleNamespace(short_description=self.short_description)
+
+            async def get_my_description(self):
+                self.calls.append("get_description")
+                return types.SimpleNamespace(description=self.description)
+
+            async def get_my_commands(self):
+                self.calls.append("get_commands")
+                return self.commands
+
+        bot = Bot()
+        asyncio.run(mod._reconcile_public_surface(bot))
+
+        self.assertEqual(
+            bot.calls,
+            [
+                "set_name",
+                "set_short_description",
+                "set_description",
+                "set_commands",
+                "get_name",
+                "get_short_description",
+                "get_description",
+                "get_commands",
+            ],
+        )
+
+    def test_stale_metadata_requires_explicit_degraded_policy(self):
+        mod = _load_bot(None)
+
+        class Bot:
+            async def set_my_name(self, _value):
+                return None
+
+            async def set_my_short_description(self, _value):
+                return None
+
+            async def set_my_description(self, _value):
+                return None
+
+            async def set_my_commands(self, _value):
+                return None
+
+            async def get_my_name(self):
+                return types.SimpleNamespace(name="stale")
+
+            async def get_my_short_description(self):
+                return types.SimpleNamespace(
+                    short_description=mod.PUBLIC_SHORT_DESCRIPTION
+                )
+
+            async def get_my_description(self):
+                return types.SimpleNamespace(description=mod.PUBLIC_DESCRIPTION)
+
+            async def get_my_commands(self):
+                return mod.PUBLIC_COMMANDS
+
+            async def get_me(self):
+                return types.SimpleNamespace(
+                    can_join_groups=False,
+                    can_read_all_group_messages=False,
+                )
+
+        required_app = types.SimpleNamespace(bot=Bot(), bot_data={})
+        with patch.dict(
+            os.environ,
+            {"SCAMSHIELD_PUBLIC_SURFACE_POLICY": "required"},
+        ):
+            with self.assertRaisesRegex(RuntimeError, "refuses to start"):
+                asyncio.run(mod._configure_public_surface(required_app))
+        self.assertEqual(
+            required_app.bot_data["scamshield_public_surface"], "DEGRADED"
+        )
+
+        degraded_app = types.SimpleNamespace(bot=Bot(), bot_data={})
+        with patch.dict(
+            os.environ,
+            {"SCAMSHIELD_PUBLIC_SURFACE_POLICY": "serve-degraded"},
+        ):
+            asyncio.run(mod._configure_public_surface(degraded_app))
+        self.assertEqual(
+            degraded_app.bot_data["scamshield_public_surface"], "DEGRADED"
+        )
+
+    def test_privacy_copy_uses_reviewed_human_route_without_fake_deletion(self):
+        mod = _load_bot(None)
+        copy = mod.privacy_text()
+
+        self.assertIn("mrinal@liquilens.in", copy)
+        self.assertIn("no account profile or reversible Telegram-user index", copy)
+        self.assertIn("automatic /delete_me command could not truthfully locate", copy)
+        self.assertNotIn(
+            "delete_me",
+            {command for command, _description in mod._command_signature(
+                mod.PUBLIC_COMMANDS
+            )},
+        )
 
     def test_docstring_and_switch_document_both_botfather_toggles(self):
         """A future reader must be able to find how to turn this on."""

@@ -275,6 +275,25 @@ class DeploymentContractTests(unittest.TestCase):
         preflight = (ROOT / "deploy/hetzner/preflight.sh").read_text()
         self.assertIn("3771:root:scamshield", preflight)
 
+    def test_dragon_den_preflight_binds_identity_destinations_and_update_owner(self):
+        preflight = (ROOT / "deploy/hetzner/preflight.sh").read_text()
+
+        self.assertIn('EXPECTED_USERNAME = "DragonDenWhispersBot"', preflight)
+        self.assertIn('me = bot_api("getMe", {})', preflight)
+        self.assertIn('chat = bot_api("getChat"', preflight)
+        self.assertIn('"getChatMember"', preflight)
+        self.assertIn("username does not match its route", preflight)
+        self.assertIn("ID does not match its route", preflight)
+        self.assertIn(
+            "standalone bot service must be inactive while relay mode owns updates",
+            preflight,
+        )
+        self.assertIn(
+            "standalone bot service must be disabled or masked while relay mode owns updates",
+            preflight,
+        )
+        self.assertIn("SCAMSHIELD_PUBLIC_SURFACE_POLICY", preflight)
+
     def test_palimpsest_bridge_is_pinned_to_merged_social_contract(self):
         revision = (ROOT / "deploy/hetzner/palimpsest.rev").read_text().strip()
 

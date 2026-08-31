@@ -172,10 +172,16 @@ systemctl disable --now scamshield-dragon-den.service
 systemctl restart scamshield-monitor.service
 ```
 
-The monitor preflight validates the dedicated token shape, route schema,
+The monitor preflight calls `getMe` and requires the exact
+`@DragonDenWhispersBot` identity, resolves every configured destination back to
+its username or numeric ID, and confirms the bot can post there. It also
+requires `scamshield-dragon-den.service` to be inactive and disabled or masked
+while relay mode owns updates. The same preflight validates the route schema,
 reference-only database directory, authorized Telethon session, and all normal
-ScamShield production invariants. At runtime the relay verifies the monitoring
-account can post to every destination before declaring the monitor ready.
+ScamShield production invariants. At runtime the relay separately verifies the
+monitoring account can post to every destination before declaring the monitor
+ready. Standalone mode repeats the bot identity, destination, source, and admin
+checks before starting its delivery worker.
 
 ## Operations and proof
 

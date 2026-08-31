@@ -101,6 +101,19 @@ SCAMSHIELD_GUIDE_URL = os.environ.get(
     "https://palimpsest.info/guides/telegram-scam-message-checker/",
 )
 EVIDENCE_CHANNEL_URL = os.environ.get("EVIDENCE_CHANNEL_URL", "").strip()
+PRIVACY_CONTACT = "mrinal@liquilens.in"
+
+PUBLIC_NAME = "ScamShield — Message Risk Check"
+PUBLIC_SHORT_DESCRIPTION = (
+    "Forward a suspicious message. Get an evidence-bounded risk readout and "
+    "reporting steps."
+)
+PUBLIC_DESCRIPTION = (
+    "ScamShield checks user-submitted messages for supported scam, money-mule, "
+    "phishing, impersonation, illicit-market, and trafficking-risk patterns. "
+    "It explains what matched, what the evidence cannot prove, and what to do next. "
+    "Private-chat Shield mode is on; group monitoring is separately gated."
+)
 
 PUBLIC_COMMANDS = (
     BotCommand("start", "Scan a suspicious message"),
@@ -305,7 +318,15 @@ def privacy_text() -> str:
         "and your selected response — not your Telegram identity or message text.\n"
         "• Public API/MCP assessments are memory-only: no storage, no Palimpsest "
         "bridge, and no raw text or exact IOC values in their response.\n"
+        "• ScamShield keeps no account profile or reversible Telegram-user index, "
+        "so an automatic /delete_me command could not truthfully locate your "
+        "historical evidence records.\n"
         f"• {html.escape(storage)}\n\n"
+        "For access, correction, or deletion of a specific indicator or assessment, "
+        f"email {html.escape(PRIVACY_CONTACT)} with the subject <b>Privacy</b> and "
+        "include only the minimum reference needed to locate it. Deleting this "
+        "Telegram chat removes your copy of the conversation but does not identify "
+        "privacy-minimized evidence records to ScamShield.\n\n"
         "Do not submit passwords, OTPs, PINs, seed phrases, or material you are not "
         "authorized to share."
     )
@@ -793,22 +814,121 @@ async def _warn_on_guardian_mismatch(app: Application) -> None:
         log.warning("guardian getMe cross-check skipped: %s", e)
 
 
+def _public_surface_policy() -> str:
+    """Return the explicit startup policy for unverified Telegram metadata."""
+
+    policy = os.environ.get(
+        "SCAMSHIELD_PUBLIC_SURFACE_POLICY", "required"
+    ).strip().lower()
+    if policy not in {"required", "serve-degraded"}:
+        raise RuntimeError(
+            "SCAMSHIELD_PUBLIC_SURFACE_POLICY must be required or serve-degraded"
+        )
+    return policy
+
+
+def _command_signature(commands) -> tuple[tuple[str, str], ...]:
+    """Normalize Bot API command objects for an exact, order-sensitive check."""
+
+    normalized = []
+    for command in commands:
+        if hasattr(command, "command") and hasattr(command, "description"):
+            normalized.append((str(command.command), str(command.description)))
+        elif isinstance(command, (tuple, list)) and len(command) == 2:
+            normalized.append((str(command[0]), str(command[1])))
+        else:
+            raise RuntimeError("Telegram returned an invalid bot command")
+    return tuple(normalized)
+
+
+async def _reconcile_public_surface(bot) -> None:
+    """Write and then read back the exact default-language public metadata."""
+
+    write_failures = []
+    writes = (
+        ("name", bot.set_my_name, PUBLIC_NAME),
+        ("short_description", bot.set_my_short_description, PUBLIC_SHORT_DESCRIPTION),
+        ("description", bot.set_my_description, PUBLIC_DESCRIPTION),
+        ("commands", bot.set_my_commands, PUBLIC_COMMANDS),
+    )
+    for field, setter, value in writes:
+        try:
+            await setter(value)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            write_failures.append(f"{field}:{type(exc).__name__}")
+
+    read_failures = []
+    observed = {}
+    reads = (
+        ("name", bot.get_my_name),
+        ("short_description", bot.get_my_short_description),
+        ("description", bot.get_my_description),
+        ("commands", bot.get_my_commands),
+    )
+    for field, getter in reads:
+        try:
+            observed[field] = await getter()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            read_failures.append(f"{field}:{type(exc).__name__}")
+
+    if read_failures:
+        detail = ", ".join(read_failures)
+        if write_failures:
+            detail += "; writes=" + ",".join(write_failures)
+        raise RuntimeError(f"Telegram public metadata readback failed ({detail})")
+
+    actual = {
+        "name": str(getattr(observed["name"], "name", "")),
+        "short_description": str(
+            getattr(observed["short_description"], "short_description", "")
+        ),
+        "description": str(
+            getattr(observed["description"], "description", "")
+        ),
+        "commands": _command_signature(observed["commands"]),
+    }
+    expected = {
+        "name": PUBLIC_NAME,
+        "short_description": PUBLIC_SHORT_DESCRIPTION,
+        "description": PUBLIC_DESCRIPTION,
+        "commands": _command_signature(PUBLIC_COMMANDS),
+    }
+    mismatches = [field for field in expected if actual[field] != expected[field]]
+    if mismatches:
+        detail = ",".join(mismatches)
+        if write_failures:
+            detail += "; writes=" + ",".join(write_failures)
+        raise RuntimeError(f"Telegram public metadata mismatch ({detail})")
+    if write_failures:
+        log.info(
+            "Telegram public metadata is exact after write errors (%s)",
+            ",".join(write_failures),
+        )
+
+
 async def _configure_public_surface(app: Application) -> None:
-    """Keep BotFather-facing discovery copy in sync with shipped commands."""
+    """Reconcile and prove BotFather-facing discovery metadata at startup."""
+    policy = _public_surface_policy()
     try:
-        await app.bot.set_my_name("ScamShield — Message Risk Check")
-        await app.bot.set_my_short_description(
-            "Forward a suspicious message. Get an evidence-bounded risk readout and reporting steps."
-        )
-        await app.bot.set_my_description(
-            "ScamShield checks user-submitted messages for supported scam, money-mule, "
-            "phishing, impersonation, illicit-market, and trafficking-risk patterns. "
-            "It explains what matched, what the evidence cannot prove, and what to do next. "
-            "Private-chat Shield mode is on; group monitoring is separately gated."
-        )
-        await app.bot.set_my_commands(PUBLIC_COMMANDS)
+        await _reconcile_public_surface(app.bot)
     except Exception as exc:
-        log.warning("Telegram discovery metadata update skipped: %s", exc)
+        app.bot_data["scamshield_public_surface"] = "DEGRADED"
+        if policy == "required":
+            raise RuntimeError(
+                "ScamShield refuses to start with unverified Telegram public metadata"
+            ) from exc
+        log.error(
+            "SCAMSHIELD PUBLIC SURFACE DEGRADED: %s; explicit "
+            "serve-degraded policy keeps private Shield polling online",
+            exc,
+        )
+    else:
+        app.bot_data["scamshield_public_surface"] = "OK"
+        log.info("Telegram public metadata readback is exact")
     await _warn_on_guardian_mismatch(app)
 
 

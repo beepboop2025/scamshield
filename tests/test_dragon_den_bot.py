@@ -128,6 +128,83 @@ class DragonDenDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(second)
         initialize.assert_called_once_with()
 
+    async def test_exact_botfather_identity_is_required(self):
+        class Bot:
+            def __init__(self, username):
+                self.username = username
+
+            async def get_me(self):
+                return types.SimpleNamespace(id=123456, username=self.username)
+
+        self.assertEqual(
+            await dragon_den_bot._verify_bot_identity(
+                Bot("DragonDenWhispersBot")
+            ),
+            123456,
+        )
+        with self.assertRaisesRegex(RuntimeError, "token identity mismatch"):
+            await dragon_den_bot._verify_bot_identity(
+                Bot("DragonDenWhispersbot")
+            )
+
+    async def test_wrong_identity_is_rejected_before_runtime_or_metadata_mutation(self):
+        class Bot:
+            async def get_me(self):
+                return types.SimpleNamespace(
+                    id=123456, username="NotDragonDenWhispersBot"
+                )
+
+            async def set_my_name(self, _value):
+                raise AssertionError("wrong bot metadata must not be changed")
+
+        app = types.SimpleNamespace(bot=Bot(), bot_data={})
+        with patch.object(dragon_den_bot, "DragonDenRuntime") as runtime:
+            with self.assertRaisesRegex(RuntimeError, "token identity mismatch"):
+                await dragon_den_bot.post_init(app)
+        runtime.assert_not_called()
+        self.assertEqual(app.bot_data, {})
+
+    async def test_destination_username_is_resolved_before_admin_check(self):
+        calls = []
+
+        class Bot:
+            async def get_chat(self, chat_id):
+                calls.append(("get_chat", chat_id))
+                return types.SimpleNamespace(id=-1001, username="wrong_destination")
+
+            async def get_chat_member(self, chat_id, bot_id):
+                calls.append(("get_chat_member", chat_id, bot_id))
+                return types.SimpleNamespace(
+                    status="administrator", can_post_messages=True
+                )
+
+        with self.assertRaisesRegex(RuntimeError, "configured username"):
+            await dragon_den_bot._verify_admin(
+                Bot(),
+                "@dragon_den_feed",
+                123456,
+                purpose="destination all",
+            )
+        self.assertEqual(calls, [("get_chat", "@dragon_den_feed")])
+
+    async def test_numeric_destination_and_posting_rights_are_both_verified(self):
+        class Bot:
+            async def get_chat(self, _chat_id):
+                return types.SimpleNamespace(id=-1009876543210, username=None)
+
+            async def get_chat_member(self, _chat_id, _bot_id):
+                return types.SimpleNamespace(
+                    status="administrator", can_post_messages=False
+                )
+
+        with self.assertRaisesRegex(RuntimeError, "cannot post"):
+            await dragon_den_bot._verify_admin(
+                Bot(),
+                "-1009876543210",
+                123456,
+                purpose="destination all",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
